@@ -106,11 +106,18 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 	// 6. remember
 	srv.AddTool(
 		mcplib.NewTool("remember",
-			mcplib.WithDescription("Save a memory entry (architectural insight, design decision, debugging note, etc)."),
-			mcplib.WithString("text", mcplib.Required(), mcplib.Description("Memory content to save")),
-			mcplib.WithString("type", mcplib.Description("Memory type: insight, decision, note, bug (default: note)")),
+			mcplib.WithDescription("Save a structured memory entry with rich metadata (architectural insight, design decision, debugging note, etc). Supports topic_key for upserts and content deduplication."),
+			mcplib.WithString("content", mcplib.Description("Memory content to save (preferred over text). Structured format: **What**: ... **Why**: ... **Where**: ... **Learned**: ...")),
+			mcplib.WithString("text", mcplib.Description("Memory content (alias for content, for backward compat)")),
+			mcplib.WithString("title", mcplib.Description("Short searchable title (auto-generated if omitted)")),
+			mcplib.WithString("type", mcplib.Description("Memory type: insight, decision, note, bug, architecture, pattern, discovery (default: note)")),
 			mcplib.WithString("scope", mcplib.Description("Scope: shared (team) or local (personal). Default: shared")),
+			mcplib.WithString("project", mcplib.Description("Project context for scoping memories")),
+			mcplib.WithString("topic_key", mcplib.Description("Stable key for upserts (e.g. 'architecture/auth-model'). Same key updates existing memory.")),
 			mcplib.WithString("tags", mcplib.Description("Comma-separated tags")),
+			mcplib.WithString("files", mcplib.Description("Comma-separated file paths related to this memory")),
+			mcplib.WithString("repo", mcplib.Description("Repository path context")),
+			mcplib.WithString("branch", mcplib.Description("Branch context")),
 		),
 		s.handleRemember,
 	)
@@ -118,16 +125,36 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 	// 7. recall
 	srv.AddTool(
 		mcplib.NewTool("recall",
-			mcplib.WithDescription("Search memories using semantic similarity."),
+			mcplib.WithDescription("Search memories using hybrid semantic + metadata search. Returns rich metadata including title, topic_key, revision count, and timestamps."),
 			mcplib.WithString("query", mcplib.Required(), mcplib.Description("Search query")),
 			mcplib.WithString("scope", mcplib.Description("Scope: shared, local, or all (default: all)")),
 			mcplib.WithString("type", mcplib.Description("Filter by memory type")),
-			mcplib.WithNumber("limit", mcplib.Description("Maximum results (default: 5)")),
+			mcplib.WithString("project", mcplib.Description("Filter by project context")),
+			mcplib.WithNumber("limit", mcplib.Description("Maximum results (default: 10)")),
 		),
 		s.handleRecall,
 	)
 
-	// 8. get_branch_context
+	// 8. memory_context
+	srv.AddTool(
+		mcplib.NewTool("memory_context",
+			mcplib.WithDescription("Get recent memories without search — quick context recovery. Like Engram's mem_context."),
+			mcplib.WithString("project", mcplib.Description("Filter by project context")),
+			mcplib.WithString("scope", mcplib.Description("Scope: shared or local")),
+			mcplib.WithNumber("limit", mcplib.Description("Maximum results (default: 20)")),
+		),
+		s.handleMemoryContext,
+	)
+
+	// 9. memory_stats
+	srv.AddTool(
+		mcplib.NewTool("memory_stats",
+			mcplib.WithDescription("Get memory system statistics: total count, breakdown by type and project."),
+		),
+		s.handleMemoryStats,
+	)
+
+	// 10. get_branch_context
 	srv.AddTool(
 		mcplib.NewTool("get_branch_context",
 			mcplib.WithDescription("Get current branch information and index statistics."),
@@ -136,7 +163,7 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 		s.handleGetBranchContext,
 	)
 
-	// 9. switch_context
+	// 11. switch_context
 	srv.AddTool(
 		mcplib.NewTool("switch_context",
 			mcplib.WithDescription("Switch the active search context to a different repository or branch."),
@@ -146,7 +173,7 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 		s.handleSwitchContext,
 	)
 
-	// 10. get_session_history
+	// 12. get_session_history
 	srv.AddTool(
 		mcplib.NewTool("get_session_history",
 			mcplib.WithDescription("Get recent session activity (queries, tool calls, files accessed)."),
@@ -156,7 +183,7 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 		s.handleGetSessionHistory,
 	)
 
-	// 11. index_status
+	// 13. index_status
 	srv.AddTool(
 		mcplib.NewTool("index_status",
 			mcplib.WithDescription("Show index freshness and statistics per branch."),
@@ -165,7 +192,7 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 		s.handleIndexStatus,
 	)
 
-	// 12. index_repo
+	// 14. index_repo
 	srv.AddTool(
 		mcplib.NewTool("index_repo",
 			mcplib.WithDescription("Trigger repository indexing. Supports incremental (only changed files) or full reindex."),
@@ -470,17 +497,43 @@ func (s *Server) handleGetReferences(ctx context.Context, request mcplib.CallToo
 
 func (s *Server) handleRemember(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	a := args(request)
-	text := argString(a, "text", "")
-	memType := argString(a, "type", "note")
-	scope := argString(a, "scope", "shared")
-	tags := argString(a, "tags", "")
 
-	result, err := s.mlClient.Call("remember", map[string]interface{}{
-		"text":  text,
-		"type":  memType,
-		"scope": scope,
-		"tags":  tags,
-	})
+	params := map[string]interface{}{
+		"type":  argString(a, "type", "note"),
+		"scope": argString(a, "scope", "shared"),
+	}
+
+	// content takes priority over text
+	if content := argString(a, "content", ""); content != "" {
+		params["content"] = content
+	} else {
+		params["text"] = argString(a, "text", "")
+	}
+
+	// Optional rich metadata fields
+	if v := argString(a, "title", ""); v != "" {
+		params["title"] = v
+	}
+	if v := argString(a, "project", ""); v != "" {
+		params["project"] = v
+	}
+	if v := argString(a, "topic_key", ""); v != "" {
+		params["topic_key"] = v
+	}
+	if v := argString(a, "tags", ""); v != "" {
+		params["tags"] = v
+	}
+	if v := argString(a, "files", ""); v != "" {
+		params["files"] = v
+	}
+	if v := argString(a, "repo", ""); v != "" {
+		params["repo"] = v
+	}
+	if v := argString(a, "branch", ""); v != "" {
+		params["branch"] = v
+	}
+
+	result, err := s.mlClient.Call("remember", params)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("saving memory: %v", err)), nil
 	}
@@ -491,9 +544,10 @@ func (s *Server) handleRemember(ctx context.Context, request mcplib.CallToolRequ
 func (s *Server) handleRecall(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	a := args(request)
 	query := argString(a, "query", "")
-	limit := argFloat(a, "limit", 5)
+	limit := argFloat(a, "limit", 10)
 	scope := argString(a, "scope", "")
 	memType := argString(a, "type", "")
+	project := argString(a, "project", "")
 
 	params := map[string]interface{}{
 		"query": query,
@@ -505,10 +559,46 @@ func (s *Server) handleRecall(ctx context.Context, request mcplib.CallToolReques
 	if memType != "" {
 		params["type"] = memType
 	}
+	if project != "" {
+		params["project"] = project
+	}
 
 	result, err := s.mlClient.Call("recall", params)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("recalling memory: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleMemoryContext(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	project := argString(a, "project", "")
+	scope := argString(a, "scope", "")
+	limit := argFloat(a, "limit", 20)
+
+	params := map[string]interface{}{
+		"limit": int(limit),
+	}
+	if project != "" {
+		params["project"] = project
+	}
+	if scope != "" {
+		params["scope"] = scope
+	}
+
+	result, err := s.mlClient.Call("memory_context", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("memory context failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleMemoryStats(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	result, err := s.mlClient.Call("memory_stats", map[string]interface{}{})
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("memory stats failed: %v", err)), nil
 	}
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil

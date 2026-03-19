@@ -13,6 +13,7 @@ from .parsers.registry import ParserRegistry
 from .pipeline.orchestrator import IndexPipeline
 from .stores.graph_store import SQLiteGraphStore
 from .stores.index_state import IndexStateStore
+from .stores.memory_store import Memory, MemoryStore
 from .stores.vector_store import LanceDBVectorStore
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,9 @@ class MLService:
             db_path=str(state_dir / "index.db"),
         )
         self._index_store = IndexStateStore(
+            db_path=str(state_dir / "index.db"),
+        )
+        self._memory_store = MemoryStore(
             db_path=str(state_dir / "index.db"),
         )
 
@@ -106,6 +110,9 @@ class MLService:
             "get_references": self._handle_get_references,
             "remember": self._handle_remember,
             "recall": self._handle_recall,
+            "memory_context": self._handle_memory_context,
+            "memory_update": self._handle_memory_update,
+            "memory_stats": self._handle_memory_stats,
             "get_branch_context": self._handle_get_branch_context,
             "get_session_history": self._handle_get_session_history,
             "index_status": self._handle_index_status,
@@ -405,87 +412,202 @@ class MLService:
         return {"symbol": symbol, "count": len(all_refs), "references": all_refs[:200]}
 
     def _handle_remember(self, params: dict) -> dict:
-        """Save a memory entry — embed + store in vector DB with memory metadata."""
-        text = params["text"]
-        mem_type = params.get("type", "note")
-        scope = params.get("scope", "shared")
-        tags = params.get("tags", "")
+        """Save a structured memory entry — Engram-quality storage.
 
+        Supports:
+        - title: searchable short title
+        - content or text: the memory content (structured with What/Why/Where/Learned)
+        - type: insight, decision, note, bug, architecture, pattern, discovery
+        - scope: shared (team) or local (personal)
+        - project: project context
+        - topic_key: stable key for upserts (e.g. "architecture/auth-model")
+        - tags: comma-separated
+        - files: comma-separated file paths
+        - repo, branch: git context
+        """
+        content = params.get("content") or params.get("text", "")
+        if not content:
+            return {"saved": False, "error": "content or text is required"}
+
+        title = params.get("title", "")
+        if not title:
+            # Auto-generate title from first line or first 80 chars
+            first_line = content.split("\n")[0].strip()
+            if first_line.startswith("**What**:"):
+                title = first_line.replace("**What**:", "").strip()[:80]
+            else:
+                title = first_line[:80]
+
+        memory = Memory(
+            title=title,
+            content=content,
+            memory_type=params.get("type", "note"),
+            scope=params.get("scope", "shared"),
+            project=params.get("project", ""),
+            topic_key=params.get("topic_key"),
+            tags=params.get("tags", ""),
+            author=params.get("author", ""),
+            repo=params.get("repo", ""),
+            branch=params.get("branch", ""),
+            files=params.get("files", ""),
+        )
+
+        # Embed content for semantic search
+        vector = self._embedding.embed_single(f"{title} {content}")
         from .stores.vector_store import VectorPoint
-        import hashlib
-        import time
-
-        vector = self._embedding.embed_single(text)
-        mem_id = hashlib.sha256(f"memory:{text[:100]}:{time.time()}".encode()).hexdigest()[:32]
+        vector_id = f"mem_{memory.normalized_hash[:24]}"
 
         point = VectorPoint(
-            id=mem_id,
+            id=vector_id,
             vector=vector,
             metadata={
-                "repo": "",
-                "branch": "",
+                "repo": memory.repo,
+                "branch": memory.branch,
                 "commit": "",
                 "file": "",
-                "symbol": "",
-                "symbol_type": "memory",
+                "symbol": memory.title,
+                "symbol_type": memory.memory_type,
                 "language": "",
                 "start_line": 0,
                 "end_line": 0,
                 "chunk_level": "memory",
-                "content_hash": hashlib.sha256(text.encode()).hexdigest()[:16],
+                "content_hash": memory.normalized_hash[:16],
                 "is_deletion": False,
-                "memory_type": mem_type,
-                "memory_scope": scope,
-                "memory_tags": tags,
+                "memory_type": memory.memory_type,
+                "memory_scope": memory.scope,
+                "memory_tags": memory.tags,
             },
-            text=text,
+            text=f"{title}\n{content}" if title else content,
         )
         self._vector_store.upsert([point])
 
+        # Save to SQLite with rich metadata
+        memory.vector_id = vector_id
+        saved = self._memory_store.save(memory)
+
         return {
             "saved": True,
-            "id": mem_id,
-            "type": mem_type,
-            "scope": scope,
-            "tags": tags,
+            "id": saved.id,
+            "title": saved.title,
+            "type": saved.memory_type,
+            "scope": saved.scope,
+            "topic_key": saved.topic_key,
+            "revision_count": saved.revision_count,
+            "duplicate_count": saved.duplicate_count,
+            "is_update": saved.revision_count > 1 or saved.duplicate_count > 1,
         }
 
     def _handle_recall(self, params: dict) -> dict:
-        """Search memories using semantic similarity."""
+        """Search memories using hybrid: semantic vector search + SQLite metadata.
+
+        Combines vector similarity with rich metadata from SQLite.
+        """
         query = params["query"]
-        limit = params.get("limit", 5)
         scope = params.get("scope")
         mem_type = params.get("type")
+        project = params.get("project", "")
+        limit = int(params.get("limit", 10))
 
+        # Semantic search via vector store
         vector = self._embedding.embed_single(query)
-
         filters = {"chunk_level": "memory"}
         if scope:
             filters["memory_scope"] = scope
         if mem_type:
             filters["memory_type"] = mem_type
 
-        results = self._vector_store.search(
-            vector=vector,
-            filter_conditions=filters,
-            limit=limit,
+        vector_results = self._vector_store.search(
+            vector=vector, filter_conditions=filters, limit=limit,
         )
 
+        # Enrich with SQLite metadata
+        memories = []
+        for vr in vector_results:
+            # Try to find the rich metadata in SQLite
+            vid = vr.id
+            row = self._memory_store._conn.execute(
+                "SELECT * FROM memories WHERE vector_id = ? AND deleted_at IS NULL",
+                (vid,),
+            ).fetchone()
+
+            if row:
+                mem = self._memory_store._row_to_memory(row)
+                memories.append({
+                    "id": mem.id,
+                    "title": mem.title,
+                    "content": mem.content,
+                    "type": mem.memory_type,
+                    "scope": mem.scope,
+                    "project": mem.project,
+                    "topic_key": mem.topic_key,
+                    "tags": mem.tags,
+                    "files": mem.files,
+                    "revision_count": mem.revision_count,
+                    "duplicate_count": mem.duplicate_count,
+                    "created_at": mem.created_at,
+                    "updated_at": mem.updated_at,
+                    "score": round(vr.score, 4),
+                })
+            else:
+                # Fallback: vector-only memory (no SQLite entry)
+                memories.append({
+                    "id": None,
+                    "title": "",
+                    "content": vr.text,
+                    "type": vr.metadata.get("memory_type", ""),
+                    "scope": vr.metadata.get("memory_scope", ""),
+                    "project": "",
+                    "topic_key": None,
+                    "tags": vr.metadata.get("memory_tags", ""),
+                    "files": "",
+                    "revision_count": 0,
+                    "duplicate_count": 0,
+                    "created_at": "",
+                    "updated_at": "",
+                    "score": round(vr.score, 4),
+                })
+
+        return {"query": query, "count": len(memories), "memories": memories}
+
+    def _handle_memory_context(self, params: dict) -> dict:
+        """Get recent memories without search — like Engram's mem_context."""
+        project = params.get("project", "")
+        scope = params.get("scope", "")
+        limit = int(params.get("limit", 20))
+
+        memories = self._memory_store.get_recent(project=project, scope=scope, limit=limit)
         return {
-            "query": query,
-            "count": len(results),
+            "count": len(memories),
             "memories": [
                 {
-                    "id": r.id,
-                    "text": r.text,
-                    "score": round(r.score, 4),
-                    "type": r.metadata.get("memory_type", ""),
-                    "scope": r.metadata.get("memory_scope", ""),
-                    "tags": r.metadata.get("memory_tags", ""),
+                    "id": m.id,
+                    "title": m.title,
+                    "content": m.content[:200] + "..." if len(m.content) > 200 else m.content,
+                    "type": m.memory_type,
+                    "scope": m.scope,
+                    "project": m.project,
+                    "topic_key": m.topic_key,
+                    "tags": m.tags,
+                    "revision_count": m.revision_count,
+                    "created_at": m.created_at,
+                    "updated_at": m.updated_at,
                 }
-                for r in results
+                for m in memories
             ],
         }
+
+    def _handle_memory_update(self, params: dict) -> dict:
+        """Update an existing memory by ID."""
+        memory_id = int(params["id"])
+        fields = {k: v for k, v in params.items() if k != "id"}
+        updated = self._memory_store.update(memory_id, **fields)
+        if updated:
+            return {"updated": True, "id": updated.id, "revision_count": updated.revision_count}
+        return {"updated": False, "error": "Memory not found"}
+
+    def _handle_memory_stats(self, params: dict) -> dict:
+        """Memory statistics."""
+        return self._memory_store.stats()
 
     def _handle_get_branch_context(self, params: dict) -> dict:
         """Get current branch info + index stats from SQLite."""
