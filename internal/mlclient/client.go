@@ -21,6 +21,16 @@ type StdioClient struct {
 	stdout *bufio.Reader
 	mu     sync.Mutex
 	nextID atomic.Int64
+	quiet  bool // suppress stderr forwarding (for MCP mode)
+}
+
+// Option configures the client.
+type Option func(*StdioClient)
+
+// WithQuiet suppresses ML service log forwarding to stderr.
+// Use this when running as MCP server to avoid polluting the MCP transport.
+func WithQuiet() Option {
+	return func(c *StdioClient) { c.quiet = true }
 }
 
 type jsonRPCRequest struct {
@@ -82,7 +92,7 @@ func findPython() string {
 
 // NewStdioClient starts the Python ML service and returns a client.
 // It waits for the DEVAI_ML_READY signal before returning.
-func NewStdioClient() (*StdioClient, error) {
+func NewStdioClient(opts ...Option) (*StdioClient, error) {
 	pythonBin := findPython()
 
 	cmd := exec.Command(pythonBin, "-m", "devai_ml.server")
@@ -107,18 +117,31 @@ func NewStdioClient() (*StdioClient, error) {
 		return nil, fmt.Errorf("starting ML service (%s): %w", pythonBin, err)
 	}
 
+	client := &StdioClient{
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: bufio.NewReader(stdout),
+	}
+	for _, opt := range opts {
+		opt(client)
+	}
+
 	// Wait for DEVAI_ML_READY on stderr (model loaded)
 	ready := make(chan error, 1)
 	go func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
-			fmt.Fprintln(os.Stderr, "[ml] "+line)
+			if !client.quiet {
+				fmt.Fprintln(os.Stderr, "[ml] "+line)
+			}
 			if strings.Contains(line, "DEVAI_ML_READY") {
 				ready <- nil
 				// Keep draining stderr in background
 				for scanner.Scan() {
-					fmt.Fprintln(os.Stderr, "[ml] "+scanner.Text())
+					if !client.quiet {
+						fmt.Fprintln(os.Stderr, "[ml] "+scanner.Text())
+					}
 				}
 				return
 			}
@@ -135,12 +158,6 @@ func NewStdioClient() (*StdioClient, error) {
 	case <-time.After(120 * time.Second):
 		cmd.Process.Kill()
 		return nil, fmt.Errorf("ML service startup timed out (120s) — model download may be needed")
-	}
-
-	client := &StdioClient{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
 	}
 
 	return client, nil

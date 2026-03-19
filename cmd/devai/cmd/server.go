@@ -81,14 +81,14 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 }
 
 func runServerMCP(cmd *cobra.Command, args []string) error {
-	// Start ML service client
-	client, err := mlclient.NewStdioClient()
+	// Start ML service as quiet sidecar (no logs to stderr — MCP uses stderr)
+	client, err := mlclient.NewStdioClient(mlclient.WithQuiet())
 	if err != nil {
 		return fmt.Errorf("starting ML service: %w", err)
 	}
 	defer client.Close()
 
-	// Start MCP server
+	// Start MCP server on stdin/stdout
 	mcpSrv := mcp.New(client)
 	return mcpSrv.ServeStdio()
 }
