@@ -180,9 +180,8 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 // --- Argument helpers ---
 
 // args extracts the arguments map from a CallToolRequest.
-// mcp-go types Arguments as `any`, so we need a type assertion.
 func args(request mcplib.CallToolRequest) map[string]interface{} {
-	if m, ok := request.Params.Arguments.(map[string]interface{}); ok {
+	if m := request.GetArguments(); m != nil {
 		return m
 	}
 	return map[string]interface{}{}
@@ -214,19 +213,27 @@ func argBool(a map[string]interface{}, key string, fallback bool) bool {
 func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	a := args(request)
 	query := argString(a, "query", "")
+	limit := argFloat(a, "limit", 10)
+	branch := argString(a, "branch", "")
+	language := argString(a, "language", "")
 
-	embedResult, err := s.mlClient.Call("embed", map[string]interface{}{"text": query})
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("embedding failed: %v", err)), nil
+	params := map[string]interface{}{
+		"query": query,
+		"limit": int(limit),
+	}
+	if branch != "" {
+		params["branch"] = branch
+	}
+	if language != "" {
+		params["language"] = language
 	}
 
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
-		"query":    query,
-		"embedded": true,
-		"result":   embedResult,
-		"note":     "Vector store search integration pending",
-	}, "", "  ")
+	result, err := s.mlClient.Call("search", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	}
 
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }
 
@@ -266,52 +273,198 @@ func (s *Server) handleReadFile(ctx context.Context, request mcplib.CallToolRequ
 func (s *Server) handleBuildContext(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	a := args(request)
 	query := argString(a, "query", "")
-	maxTokens := argFloat(a, "max_tokens", 4096)
+	maxTokens := int(argFloat(a, "max_tokens", 4096))
+	branch := argString(a, "branch", "")
 
-	embedResult, err := s.mlClient.Call("embed", map[string]interface{}{"text": query})
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("embedding failed: %v", err)), nil
+	var contextBuf strings.Builder
+	tokensUsed := 0
+
+	// Step 1: Search memories for enrichment
+	// Memories provide human knowledge that improves context quality over time
+	recallResult, err := s.mlClient.Call("recall", map[string]interface{}{
+		"query": query,
+		"limit": 5,
+	})
+	if err == nil {
+		if rm, ok := recallResult.(map[string]interface{}); ok {
+			if memories, ok := rm["memories"].([]interface{}); ok && len(memories) > 0 {
+				// Collect file hints from memories
+				var fileHints []string
+				for _, mem := range memories {
+					mm, ok := mem.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					text, _ := mm["text"].(string)
+					score, _ := mm["score"].(float64)
+					if text != "" && score < 1.5 { // only relevant memories
+						note := fmt.Sprintf("// [memory] %s\n\n", text)
+						noteTokens := len(note) / 4
+						if tokensUsed+noteTokens <= maxTokens {
+							contextBuf.WriteString(note)
+							tokensUsed += noteTokens
+						}
+						// Extract file paths mentioned in memory text
+						fileHints = append(fileHints, extractFilePaths(text)...)
+					}
+				}
+				// Search for files mentioned in memories (enrichment)
+				for _, hint := range fileHints {
+					hintResult, err := s.mlClient.Call("search", map[string]interface{}{
+						"query": hint,
+						"limit": 3,
+					})
+					if err == nil {
+						if hm, ok := hintResult.(map[string]interface{}); ok {
+							if hResults, ok := hm["results"].([]interface{}); ok {
+								for _, r := range hResults {
+									item, ok := r.(map[string]interface{})
+									if !ok {
+										continue
+									}
+									text, _ := item["text"].(string)
+									file, _ := item["file"].(string)
+									startLine, _ := item["start_line"].(float64)
+									chunk := fmt.Sprintf("// %s:%g\n%s\n\n", file, startLine, text)
+									chunkTokens := len(chunk) / 4
+									if tokensUsed+chunkTokens <= maxTokens {
+										contextBuf.WriteString(chunk)
+										tokensUsed += chunkTokens
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
-		"query":      query,
-		"max_tokens": maxTokens,
-		"embedded":   true,
-		"result":     embedResult,
-		"note":       "Context assembly from vector search pending",
-	}, "", "  ")
+	// Step 2: Search for relevant code chunks
+	params := map[string]interface{}{
+		"query": query,
+		"limit": 30, // fetch more to fill remaining budget
+	}
+	if branch != "" {
+		params["branch"] = branch
+	}
 
-	return mcplib.NewToolResultText(string(resultJSON)), nil
+	result, err := s.mlClient.Call("search", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
+	}
+
+	m, ok := result.(map[string]interface{})
+	if !ok {
+		return mcplib.NewToolResultError("unexpected search result format"), nil
+	}
+
+	results, _ := m["results"].([]interface{})
+
+	// Track files already in context to avoid duplicates
+	existingContext := contextBuf.String()
+
+	for _, r := range results {
+		item, ok := r.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		text, _ := item["text"].(string)
+		file, _ := item["file"].(string)
+		startLine, _ := item["start_line"].(float64)
+
+		chunk := fmt.Sprintf("// %s:%g\n%s\n\n", file, startLine, text)
+
+		// Skip if this file+line is already in context (from memory enrichment)
+		fileRef := fmt.Sprintf("// %s:", file)
+		if strings.Contains(existingContext, fileRef) {
+			continue
+		}
+
+		chunkTokens := len(chunk) / 4
+		if tokensUsed+chunkTokens > maxTokens {
+			break
+		}
+		contextBuf.WriteString(chunk)
+		tokensUsed += chunkTokens
+	}
+
+	return mcplib.NewToolResultText(contextBuf.String()), nil
+}
+
+// extractFilePaths finds file-like references in memory text.
+// Looks for patterns like "path/to/file.ts" or "SomeComponent" → "some-component".
+func extractFilePaths(text string) []string {
+	var hints []string
+	// Simple heuristic: find words that look like file references
+	// e.g. "birth-record.service.ts", "nui-muhlbauer.service"
+	words := strings.Fields(text)
+	for _, w := range words {
+		w = strings.Trim(w, ",.;:()[]{}\"'`")
+		// Has a dot and looks like a file
+		if strings.Contains(w, ".") && (strings.HasSuffix(w, ".ts") ||
+			strings.HasSuffix(w, ".js") ||
+			strings.HasSuffix(w, ".java") ||
+			strings.HasSuffix(w, ".html") ||
+			strings.HasSuffix(w, ".css") ||
+			strings.HasSuffix(w, ".service") ||
+			strings.HasSuffix(w, ".component") ||
+			strings.HasSuffix(w, ".interface")) {
+			hints = append(hints, w)
+		}
+		// Has path separator
+		if strings.Contains(w, "/") && len(w) > 3 {
+			hints = append(hints, w)
+		}
+	}
+	return hints
 }
 
 func (s *Server) handleReadSymbol(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	a := args(request)
 	name := argString(a, "name", "")
+	branch := argString(a, "branch", s.activeBranch)
+	repo := argString(a, "repo", s.activeRepo)
 
-	result, err := s.mlClient.Call("embed", map[string]interface{}{"text": name})
+	params := map[string]interface{}{
+		"name": name,
+	}
+	if branch != "" {
+		params["branch"] = branch
+	}
+	if repo != "" {
+		params["repo"] = repo
+	}
+
+	result, err := s.mlClient.Call("read_symbol", params)
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("symbol lookup failed: %v", err)), nil
 	}
-
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
-		"symbol":   name,
-		"embedded": true,
-		"result":   result,
-		"note":     "Symbol index lookup pending",
-	}, "", "  ")
-
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }
 
 func (s *Server) handleGetReferences(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	a := args(request)
 	symbol := argString(a, "symbol", "")
+	branch := argString(a, "branch", s.activeBranch)
+	repo := argString(a, "repo", s.activeRepo)
 
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
+	params := map[string]interface{}{
 		"symbol": symbol,
-		"note":   "Graph store reference lookup pending",
-	}, "", "  ")
+	}
+	if branch != "" {
+		params["branch"] = branch
+	}
+	if repo != "" {
+		params["repo"] = repo
+	}
 
+	result, err := s.mlClient.Call("get_references", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("reference lookup failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }
 
@@ -322,19 +475,16 @@ func (s *Server) handleRemember(ctx context.Context, request mcplib.CallToolRequ
 	scope := argString(a, "scope", "shared")
 	tags := argString(a, "tags", "")
 
-	_, err := s.mlClient.Call("embed", map[string]interface{}{"text": text})
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("embedding memory: %v", err)), nil
-	}
-
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
-		"saved": true,
+	result, err := s.mlClient.Call("remember", map[string]interface{}{
+		"text":  text,
 		"type":  memType,
 		"scope": scope,
 		"tags":  tags,
-		"note":  "Memory storage pending full implementation",
-	}, "", "  ")
-
+	})
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("saving memory: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }
 
@@ -342,31 +492,46 @@ func (s *Server) handleRecall(ctx context.Context, request mcplib.CallToolReques
 	a := args(request)
 	query := argString(a, "query", "")
 	limit := argFloat(a, "limit", 5)
+	scope := argString(a, "scope", "")
+	memType := argString(a, "type", "")
 
-	_, err := s.mlClient.Call("embed", map[string]interface{}{"text": query})
-	if err != nil {
-		return mcplib.NewToolResultError(fmt.Sprintf("embedding query: %v", err)), nil
+	params := map[string]interface{}{
+		"query": query,
+		"limit": int(limit),
+	}
+	if scope != "" {
+		params["scope"] = scope
+	}
+	if memType != "" {
+		params["type"] = memType
 	}
 
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
-		"query": query,
-		"limit": limit,
-		"note":  "Memory vector search pending",
-	}, "", "  ")
-
+	result, err := s.mlClient.Call("recall", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("recalling memory: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }
 
 func (s *Server) handleGetBranchContext(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
 	a := args(request)
 	branch := argString(a, "branch", s.activeBranch)
+	repo := argString(a, "repo", s.activeRepo)
 
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
-		"branch":      branch,
-		"active_repo": s.activeRepo,
-		"note":        "Full branch context + index stats pending",
-	}, "", "  ")
+	params := map[string]interface{}{}
+	if branch != "" {
+		params["branch"] = branch
+	}
+	if repo != "" {
+		params["repo"] = repo
+	}
 
+	result, err := s.mlClient.Call("get_branch_context", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("branch context failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }
 
@@ -392,11 +557,13 @@ func (s *Server) handleGetSessionHistory(ctx context.Context, request mcplib.Cal
 	a := args(request)
 	limit := argFloat(a, "limit", 20)
 
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
-		"limit": limit,
-		"note":  "Session history from SQLite pending",
-	}, "", "  ")
-
+	result, err := s.mlClient.Call("get_session_history", map[string]interface{}{
+		"limit": int(limit),
+	})
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("session history failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }
 
@@ -404,11 +571,16 @@ func (s *Server) handleIndexStatus(ctx context.Context, request mcplib.CallToolR
 	a := args(request)
 	repo := argString(a, "repo", s.activeRepo)
 
-	resultJSON, _ := json.MarshalIndent(map[string]interface{}{
-		"repo": repo,
-		"note": "Index state from SQLite pending",
-	}, "", "  ")
+	params := map[string]interface{}{}
+	if repo != "" {
+		params["repo"] = repo
+	}
 
+	result, err := s.mlClient.Call("index_status", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("index status failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }
 
