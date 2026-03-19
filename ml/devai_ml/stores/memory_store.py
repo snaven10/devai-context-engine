@@ -13,14 +13,14 @@ logger = logging.getLogger(__name__)
 
 def normalize_hash(content: str) -> str:
     """Normalize content and compute SHA256 hash for dedup.
-    Same logic as Engram: lowercase, collapse whitespace."""
+    Lowercase and collapse whitespace before hashing."""
     normalized = " ".join(content.lower().split())
     return hashlib.sha256(normalized.encode()).hexdigest()
 
 
 @dataclass
 class Memory:
-    """A structured memory entry — mirrors Engram's Observation."""
+    """A structured memory entry."""
     id: int | None = None
     title: str = ""
     content: str = ""
@@ -52,7 +52,7 @@ class Memory:
 
 
 class MemoryStore:
-    """SQLite-backed memory store with Engram-quality features.
+    """SQLite-backed memory store with rich metadata and dedup.
 
     Features:
     - Rich metadata (title, type, scope, project, tags, files, author)
@@ -243,7 +243,7 @@ class MemoryStore:
         return [self._row_to_memory(r) for r in rows]
 
     def get_recent(self, project: str = "", scope: str = "", limit: int = 20) -> list[Memory]:
-        """Get recent memories without search — like Engram's mem_context."""
+        """Get recent memories without search."""
         conditions = ["deleted_at IS NULL"]
         params: list[Any] = []
         if project:

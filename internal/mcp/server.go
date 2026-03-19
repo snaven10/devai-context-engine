@@ -138,7 +138,7 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 	// 8. memory_context
 	srv.AddTool(
 		mcplib.NewTool("memory_context",
-			mcplib.WithDescription("Get recent memories without search — quick context recovery. Like Engram's mem_context."),
+			mcplib.WithDescription("Get recent memories without search — quick context recovery."),
 			mcplib.WithString("project", mcplib.Description("Filter by project context")),
 			mcplib.WithString("scope", mcplib.Description("Scope: shared or local")),
 			mcplib.WithNumber("limit", mcplib.Description("Maximum results (default: 20)")),

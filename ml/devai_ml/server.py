@@ -415,7 +415,7 @@ class MLService:
         return {"symbol": symbol, "count": len(all_refs), "references": all_refs[:200]}
 
     def _handle_remember(self, params: dict) -> dict:
-        """Save a structured memory entry — Engram-quality storage.
+        """Save a structured memory entry.
 
         Supports:
         - title: searchable short title
@@ -573,7 +573,7 @@ class MLService:
         return {"query": query, "count": len(memories), "memories": memories}
 
     def _handle_memory_context(self, params: dict) -> dict:
-        """Get recent memories without search — like Engram's mem_context."""
+        """Get recent memories without search."""
         project = params.get("project", "")
         scope = params.get("scope", "")
         limit = int(params.get("limit", 20))
