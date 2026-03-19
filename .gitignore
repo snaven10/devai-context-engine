@@ -1,0 +1,53 @@
+# Go
+/devai
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.whl
+.venv/
+venv/
+env/
+
+# gRPC generated
+ml/devai_ml/proto/*_pb2.py
+ml/devai_ml/proto/*_pb2_grpc.py
+ml/devai_ml/proto/*_pb2.pyi
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# DevAI state
+.devai/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# LanceDB
+*.lance/
+
+# Environment
+.env
+.env.local
+credentials.yaml

@@ -1,0 +1,187 @@
+syntax = "proto3";
+package devai.ml;
+option go_package = "github.com/snaven10/devai/internal/mlpb";
+
+// Service definitions:
+
+service EmbeddingService {
+  rpc Embed(EmbedRequest) returns (EmbedResponse);
+  rpc EmbedBatch(EmbedBatchRequest) returns (EmbedBatchResponse);
+}
+
+service ParserService {
+  rpc ParseFile(ParseRequest) returns (ParseResponse);
+  rpc ExtractSymbols(ParseRequest) returns (SymbolsResponse);
+}
+
+service IndexingService {
+  rpc IndexFiles(stream IndexFileRequest) returns (stream IndexProgress);
+  rpc IndexRepo(IndexRepoRequest) returns (stream IndexProgress);
+}
+
+service GraphService {
+  rpc BuildCallGraph(GraphRequest) returns (GraphResponse);
+  rpc BuildDependencyGraph(GraphRequest) returns (GraphResponse);
+}
+
+service HealthService {
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// Messages:
+
+message EmbedRequest {
+  string text = 1;
+  string model = 2;  // optional override
+}
+
+message EmbedResponse {
+  repeated float vector = 1;
+  int32 dimension = 2;
+  string model = 3;
+}
+
+message EmbedBatchRequest {
+  repeated string texts = 1;
+  string model = 2;
+}
+
+message EmbedBatchResponse {
+  repeated Vector vectors = 1;
+  int32 dimension = 2;
+  string model = 3;
+}
+
+message Vector {
+  repeated float values = 1;
+}
+
+message ParseRequest {
+  string file_path = 1;
+  string content = 2;     // optional: if provided, parse this instead of reading file
+  string language = 3;    // optional: force language detection
+}
+
+message ParseResponse {
+  string file_path = 1;
+  string language = 2;
+  repeated Symbol symbols = 3;
+  repeated Import imports = 4;
+  repeated Export exports = 5;
+  repeated GraphEdge edges = 6;
+}
+
+message Symbol {
+  string name = 1;
+  string kind = 2;          // function, method, class, struct, interface, enum, constant, variable, type_alias
+  string language = 3;
+  string file_path = 4;
+  int32 start_line = 5;
+  int32 end_line = 6;
+  int32 start_byte = 7;
+  int32 end_byte = 8;
+  string code = 9;
+  string signature = 10;
+  string docstring = 11;
+  string parent = 12;       // enclosing class/module
+  repeated string params = 13;
+  string return_type = 14;
+  repeated string decorators = 15;
+  string visibility = 16;   // public, private, protected
+}
+
+message Import {
+  string module = 1;
+  string alias = 2;
+  repeated string names = 3;
+  string file_path = 4;
+  int32 line = 5;
+}
+
+message Export {
+  string name = 1;
+  string kind = 2;
+  string file_path = 3;
+  int32 line = 4;
+}
+
+message GraphEdge {
+  string source = 1;     // fully qualified symbol
+  string target = 2;
+  string kind = 3;       // calls, imports, inherits, implements, references
+  string file_path = 4;
+  int32 line = 5;
+}
+
+message SymbolsResponse {
+  repeated Symbol symbols = 1;
+  string file_path = 2;
+  string language = 3;
+}
+
+message IndexFileRequest {
+  string file_path = 1;
+  string content = 2;
+  string repo = 3;
+  string branch = 4;
+  string commit = 5;
+  string language = 6;
+}
+
+message IndexRepoRequest {
+  string repo_path = 1;
+  string branch = 2;
+  string from_commit = 3;   // for incremental: last indexed commit
+  string to_commit = 4;     // current commit
+  bool incremental = 5;
+  repeated string include_patterns = 6;
+  repeated string exclude_patterns = 7;
+  repeated string languages = 8;
+}
+
+message IndexProgress {
+  string file_path = 1;
+  string status = 2;        // processing, completed, failed, skipped
+  int32 chunks_created = 3;
+  int32 symbols_found = 4;
+  int32 edges_found = 5;
+  string error = 6;
+  float progress_percent = 7;
+  // Results for completed files
+  repeated CodeChunk chunks = 8;
+  repeated Symbol symbols = 9;
+  repeated GraphEdge edges = 10;
+}
+
+message CodeChunk {
+  string text = 1;
+  string file_path = 2;
+  string language = 3;
+  string level = 4;          // file, class, function, block
+  string symbol_name = 5;
+  string symbol_type = 6;
+  int32 start_line = 7;
+  int32 end_line = 8;
+  string context_header = 9; // breadcrumb: "file > class > method"
+  repeated float vector = 10; // embedding
+}
+
+message GraphRequest {
+  string file_path = 1;
+  string content = 2;
+  string language = 3;
+}
+
+message GraphResponse {
+  repeated GraphEdge edges = 1;
+  string file_path = 2;
+}
+
+message HealthCheckRequest {}
+
+message HealthCheckResponse {
+  string status = 1;         // serving, not_serving
+  string model_loaded = 2;
+  int32 model_dimension = 3;
+  repeated string languages_supported = 4;
+}

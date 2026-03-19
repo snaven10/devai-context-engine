@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  devai:
+    build: .
+    ports:
+      - "8080:8080"      # HTTP API
+    volumes:
+      - devai-data:/data
+      - ./repos:/repos:ro  # mount repos to index
+    environment:
+      - DEVAI_STATE_DIR=/data/state
+      - DEVAI_ML_MODEL=minilm-l6
+      - DEVAI_STORAGE_MODE=shared
+      - DEVAI_API_TOKEN=${DEVAI_API_TOKEN:-devai-dev-token}
+    depends_on:
+      - qdrant
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"      # REST API
+      - "6334:6334"      # gRPC
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+volumes:
+  devai-data:
+  qdrant-data:

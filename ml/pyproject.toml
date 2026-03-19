@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "devai-ml"
+version = "0.1.0"
+description = "ML service for DevAI code intelligence"
+requires-python = ">= 3.11"
+dependencies = [
+    "grpcio >= 1.60.0",
+    "grpcio-tools >= 1.60.0",
+    "protobuf >= 4.25.0",
+    "sentence-transformers >= 2.2.0",
+    "tree-sitter >= 0.23.0",
+    "tree-sitter-python",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-go",
+    "tree-sitter-java",
+    "tree-sitter-rust",
+    "lancedb >= 0.4.0",
+    "qdrant-client >= 1.7.0",
+    "tiktoken >= 0.5.0",
+]
+
+[project.optional-dependencies]
+api = [
+    "openai >= 1.0.0",
+    "voyageai >= 0.2.0",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[project.scripts]
+devai-ml = "devai_ml.server:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
