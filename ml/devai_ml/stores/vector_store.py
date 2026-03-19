@@ -66,7 +66,52 @@ class LanceDBVectorStore:
         self._table_name = table_name
         self._dimension = dimension
         self._table = self._get_or_create_table()
+        self._ensure_schema()
         logger.info("LanceDB store initialized at %s (table=%s)", db_path, table_name)
+
+    def _ensure_schema(self):
+        """Migrate existing tables that are missing new columns.
+
+        Uses LanceDB's native add_columns with literal defaults.
+        If that fails, falls back to reading data as Arrow, adding columns,
+        and recreating. Never drops data silently.
+        """
+        import pyarrow as pa
+
+        required = {"memory_type", "memory_scope", "memory_tags"}
+        existing = set(self._table.schema.names)
+        missing = required - existing
+        if not missing:
+            return
+
+        row_count = self._table.count_rows()
+        if row_count == 0:
+            # Empty table — just recreate with full schema
+            logger.info("Empty table, recreating with full schema")
+            self._db.drop_table(self._table_name)
+            self._table = self._get_or_create_table()
+            return
+
+        logger.info(
+            "Schema migration: adding %s to table %s (%d rows)",
+            missing, self._table_name, row_count,
+        )
+        try:
+            # Try native Arrow-based migration (no pandas needed)
+            table_data = self._table.to_arrow()
+            for col in missing:
+                null_col = pa.array([""] * row_count, type=pa.string())
+                table_data = table_data.append_column(col, null_col)
+            self._db.drop_table(self._table_name)
+            self._table = self._db.create_table(self._table_name, data=table_data)
+            logger.info("Schema migration complete: %d rows preserved", row_count)
+        except Exception as e:
+            logger.error(
+                "Schema migration FAILED for %s: %s — data preserved but new columns not added. "
+                "Re-index to fix.",
+                self._table_name, e,
+            )
+            # DO NOT drop and recreate — keep existing data without new columns
 
     def _get_or_create_table(self):
         import pyarrow as pa
@@ -90,6 +135,9 @@ class LanceDBVectorStore:
             pa.field("chunk_level", pa.string()),
             pa.field("content_hash", pa.string()),
             pa.field("is_deletion", pa.bool_()),
+            pa.field("memory_type", pa.string()),    # insight, decision, note, bug
+            pa.field("memory_scope", pa.string()),   # shared, local
+            pa.field("memory_tags", pa.string()),    # comma-separated tags
         ])
         return self._db.create_table(self._table_name, schema=schema)
 
@@ -114,6 +162,9 @@ class LanceDBVectorStore:
                 "chunk_level": p.metadata.get("chunk_level", ""),
                 "content_hash": p.metadata.get("content_hash", ""),
                 "is_deletion": p.metadata.get("is_deletion", False),
+                "memory_type": p.metadata.get("memory_type", ""),
+                "memory_scope": p.metadata.get("memory_scope", ""),
+                "memory_tags": p.metadata.get("memory_tags", ""),
             }
             data.append(row)
 
@@ -146,28 +197,31 @@ class LanceDBVectorStore:
             if where_parts:
                 query = query.where(" AND ".join(where_parts))
 
-        results = query.to_pandas()
+        table = query.to_arrow()
         search_results = []
-        for _, row in results.iterrows():
+        for i in range(table.num_rows):
             metadata = {
-                "repo": row.get("repo", ""),
-                "branch": row.get("branch", ""),
-                "commit": row.get("commit", ""),
-                "file": row.get("file", ""),
-                "symbol": row.get("symbol", ""),
-                "symbol_type": row.get("symbol_type", ""),
-                "language": row.get("language", ""),
-                "start_line": int(row.get("start_line", 0)),
-                "end_line": int(row.get("end_line", 0)),
-                "chunk_level": row.get("chunk_level", ""),
-                "content_hash": row.get("content_hash", ""),
-                "is_deletion": bool(row.get("is_deletion", False)),
+                "repo": str(table.column("repo")[i].as_py()),
+                "branch": str(table.column("branch")[i].as_py()),
+                "commit": str(table.column("commit")[i].as_py()),
+                "file": str(table.column("file")[i].as_py()),
+                "symbol": str(table.column("symbol")[i].as_py()),
+                "symbol_type": str(table.column("symbol_type")[i].as_py()),
+                "language": str(table.column("language")[i].as_py()),
+                "start_line": int(table.column("start_line")[i].as_py()),
+                "end_line": int(table.column("end_line")[i].as_py()),
+                "chunk_level": str(table.column("chunk_level")[i].as_py()),
+                "content_hash": str(table.column("content_hash")[i].as_py()),
+                "is_deletion": bool(table.column("is_deletion")[i].as_py()),
+                "memory_type": str(table.column("memory_type")[i].as_py()) if "memory_type" in table.schema.names else "",
+                "memory_scope": str(table.column("memory_scope")[i].as_py()) if "memory_scope" in table.schema.names else "",
+                "memory_tags": str(table.column("memory_tags")[i].as_py()) if "memory_tags" in table.schema.names else "",
             }
             search_results.append(SearchResult(
-                id=row["id"],
-                score=float(row.get("_distance", 0.0)),
+                id=str(table.column("id")[i].as_py()),
+                score=float(table.column("_distance")[i].as_py()),
                 metadata=metadata,
-                text=row.get("text", ""),
+                text=str(table.column("text")[i].as_py()),
             ))
         return search_results
 

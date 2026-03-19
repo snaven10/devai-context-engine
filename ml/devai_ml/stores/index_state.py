@@ -82,7 +82,42 @@ class IndexStateStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(self.SCHEMA)
         self._conn.commit()
+        self.normalize_paths()
         logger.info("IndexStateStore initialized at %s", db_path)
+
+    def normalize_paths(self) -> None:
+        """Remove trailing slashes from all repo_path entries.
+
+        Handles UNIQUE constraint conflicts by deleting the slash-suffixed
+        duplicate first (keeping the clean version), then normalizing the rest.
+        """
+        # Delete duplicates where both 'path/' and 'path' exist (keep the clean one)
+        self._conn.execute("""
+            DELETE FROM index_state
+            WHERE repo_path LIKE '%/'
+            AND RTRIM(repo_path, '/') IN (SELECT repo_path FROM index_state WHERE repo_path NOT LIKE '%/')
+        """)
+        self._conn.execute("""
+            DELETE FROM file_state
+            WHERE repo_path LIKE '%/'
+            AND RTRIM(repo_path, '/') IN (SELECT DISTINCT repo_path FROM file_state WHERE repo_path NOT LIKE '%/')
+        """)
+        self._conn.execute("""
+            DELETE FROM branch_lineage
+            WHERE repo_path LIKE '%/'
+            AND RTRIM(repo_path, '/') IN (SELECT repo_path FROM branch_lineage WHERE repo_path NOT LIKE '%/')
+        """)
+        # Now safe to normalize remaining entries
+        self._conn.execute(
+            "UPDATE index_state SET repo_path = RTRIM(repo_path, '/') WHERE repo_path LIKE '%/'"
+        )
+        self._conn.execute(
+            "UPDATE file_state SET repo_path = RTRIM(repo_path, '/') WHERE repo_path LIKE '%/'"
+        )
+        self._conn.execute(
+            "UPDATE branch_lineage SET repo_path = RTRIM(repo_path, '/') WHERE repo_path LIKE '%/'"
+        )
+        self._conn.commit()
 
     def close(self) -> None:
         self._conn.close()

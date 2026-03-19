@@ -66,7 +66,26 @@ class SQLiteGraphStore:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(self.SCHEMA)
         self._conn.commit()
+        self._normalize_existing_data()
         logger.info("GraphStore initialized at %s", db_path)
+
+    def _normalize_existing_data(self) -> None:
+        """Clean up existing data: normalize repo paths and remove duplicates."""
+        try:
+            # Always strip trailing slashes from repo paths
+            self._conn.execute(
+                "UPDATE graph_edges SET repo = RTRIM(repo, '/') WHERE repo LIKE '%/'"
+            )
+            # Remove exact duplicates (same source, target, kind, file, line)
+            self._conn.execute("""
+                DELETE FROM graph_edges WHERE rowid NOT IN (
+                    SELECT MIN(rowid) FROM graph_edges
+                    GROUP BY source, target, kind, source_file, line, repo, branch
+                )
+            """)
+            self._conn.commit()
+        except Exception as e:
+            logger.warning("Data normalization failed: %s", e)
 
     def close(self) -> None:
         self._conn.close()
@@ -80,7 +99,7 @@ class SQLiteGraphStore:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 (e.source, e.target, e.kind, e.source_file, e.target_file,
-                 e.line, e.repo, e.branch)
+                 e.line, self.normalize_repo_path(e.repo), e.branch)
                 for e in edges
             ],
         )
@@ -142,6 +161,26 @@ class SQLiteGraphStore:
             (repo, branch, file_path),
         ).fetchall()
         return [r[0] for r in rows]
+
+    def find_references(self, repo: str, branch: str, symbol: str) -> list[StoredEdge]:
+        """Find all references to a symbol across all edge kinds.
+
+        Uses LIKE matching to handle partial/qualified names.
+        """
+        pattern = f"%{symbol}%"
+        rows = self._conn.execute(
+            """SELECT source, target, kind, source_file, target_file, line, repo, branch
+               FROM graph_edges
+               WHERE repo = ? AND branch = ?
+               AND (target LIKE ? OR source LIKE ?)""",
+            (repo, branch, pattern, pattern),
+        ).fetchall()
+        return [StoredEdge(*r) for r in rows]
+
+    @staticmethod
+    def normalize_repo_path(path: str) -> str:
+        """Strip trailing slashes from a repo path."""
+        return path.rstrip("/")
 
     def get_subgraph(self, repo: str, branch: str, symbol: str, depth: int = 2) -> list[StoredEdge]:
         """BFS from symbol up to depth, returns all edges in the subgraph."""
