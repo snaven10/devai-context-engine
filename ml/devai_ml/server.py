@@ -35,9 +35,19 @@ class MLService:
         self._parser_registry = ParserRegistry()
         self._chunker = SemanticChunker()
 
-        # Storage paths
-        state_dir = Path(config.get("state_dir", ".devai/state"))
+        # Storage path resolution (priority order):
+        #   1. DEVAI_STATE_DIR env var
+        #   2. config.state_dir (from CLI --state-dir or config file)
+        #   3. ~/.local/share/devai/state/ (XDG default)
+        import os
+        xdg_default = str(Path.home() / ".local" / "share" / "devai" / "state")
+        state_dir = Path(
+            os.environ.get("DEVAI_STATE_DIR")
+            or config.get("state_dir")
+            or xdg_default
+        )
         state_dir.mkdir(parents=True, exist_ok=True)
+        logger.info("State directory: %s", state_dir)
 
         self._vector_store = LanceDBVectorStore(
             db_path=str(state_dir / "vectors"),
@@ -88,9 +98,17 @@ class MLService:
         handlers = {
             "embed": self._handle_embed,
             "embed_batch": self._handle_embed_batch,
+            "search": self._handle_search,
             "parse_file": self._handle_parse_file,
             "index_repo": self._handle_index_repo,
             "health": self._handle_health,
+            "read_symbol": self._handle_read_symbol,
+            "get_references": self._handle_get_references,
+            "remember": self._handle_remember,
+            "recall": self._handle_recall,
+            "get_branch_context": self._handle_get_branch_context,
+            "get_session_history": self._handle_get_session_history,
+            "index_status": self._handle_index_status,
         }
 
         handler = handlers.get(method)
@@ -117,6 +135,58 @@ class MLService:
             "dimension": self._embedding.dimension(),
             "model": self._embedding.model_name(),
             "count": len(vectors),
+        }
+
+    def _handle_search(self, params: dict) -> dict:
+        """Semantic search: embed query → search LanceDB → return results."""
+        query = params["query"]
+        limit = params.get("limit", 10)
+        branch = params.get("branch")
+        language = params.get("language")
+
+        # Embed the query
+        vector = self._embedding.embed_single(query)
+
+        # Build filter
+        filters = {}
+        if branch:
+            filters["branch"] = branch
+        if language:
+            filters["language"] = language
+
+        # Search vector store
+        results = self._vector_store.search(
+            vector=vector,
+            filter_conditions=filters if filters else None,
+            limit=limit,
+        )
+
+        # Deduplicate by file + start_line (handles duplicate vectors from
+        # re-indexing with inconsistent repo paths)
+        seen: set[str] = set()
+        deduped = []
+        for r in results:
+            key = f"{r.metadata.get('file', '')}:{r.metadata.get('start_line', 0)}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append({
+                "score": round(r.score, 4),
+                "file": r.metadata.get("file", ""),
+                "symbol": r.metadata.get("symbol", ""),
+                "symbol_type": r.metadata.get("symbol_type", ""),
+                "language": r.metadata.get("language", ""),
+                "start_line": r.metadata.get("start_line", 0),
+                "end_line": r.metadata.get("end_line", 0),
+                "chunk_level": r.metadata.get("chunk_level", ""),
+                "branch": r.metadata.get("branch", ""),
+                "text": r.text[:500] if r.text else "",
+            })
+
+        return {
+            "query": query,
+            "count": len(deduped),
+            "results": deduped,
         }
 
     def _handle_parse_file(self, params: dict) -> dict:
@@ -163,7 +233,7 @@ class MLService:
 
     def _handle_index_repo(self, params: dict) -> dict:
         """Index a repository."""
-        repo_path = params["repo_path"]
+        repo_path = params["repo_path"].rstrip("/")
         branch = params.get("branch")
         incremental = params.get("incremental", True)
 
@@ -181,6 +251,334 @@ class MLService:
             "errors": result.errors,
         }
 
+    def _get_indexed_repos(self) -> list[str]:
+        """Get all repo paths that have been indexed by reading index_state."""
+        conn = self._index_store._conn
+        rows = conn.execute("SELECT DISTINCT repo_path FROM index_state").fetchall()
+        return [r[0] for r in rows]
+
+    def _get_repo_branches(self, repo_path: str) -> list[str]:
+        """Get all indexed branches for a repo."""
+        conn = self._index_store._conn
+        rows = conn.execute(
+            "SELECT DISTINCT branch FROM index_state WHERE repo_path = ?",
+            (repo_path,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def _handle_read_symbol(self, params: dict) -> dict:
+        """Find a symbol by name using vector search, then return its code."""
+        name = params["name"]
+        branch = params.get("branch")
+        repo = params.get("repo")
+
+        # Search for the symbol in vectors
+        vector = self._embedding.embed_single(name)
+        filters = {"symbol_type": ["function", "method", "class", "struct", "interface", "enum"]}
+        if branch:
+            filters["branch"] = branch
+
+        results = self._vector_store.search(
+            vector=vector,
+            filter_conditions=filters,
+            limit=5,
+        )
+
+        # Find best match by symbol name
+        best = None
+        for r in results:
+            sym_name = r.metadata.get("symbol", "")
+            if sym_name.lower() == name.lower():
+                best = r
+                break
+            if name.lower() in sym_name.lower() and best is None:
+                best = r
+
+        if best is None and results:
+            best = results[0]
+
+        if best is None:
+            return {"symbol": name, "found": False, "error": "Symbol not found"}
+
+        # Try to read the actual source code from disk
+        file_path = best.metadata.get("file", "")
+        start_line = best.metadata.get("start_line", 0)
+        end_line = best.metadata.get("end_line", 0)
+        code = best.text
+
+        if file_path and start_line > 0:
+            # Try to read from actual repo files
+            import os
+            for candidate_repo in self._get_indexed_repos():
+                full_path = os.path.join(candidate_repo, file_path)
+                if os.path.exists(full_path):
+                    try:
+                        with open(full_path) as f:
+                            lines = f.readlines()
+                            if start_line <= len(lines):
+                                end = min(end_line, len(lines))
+                                code = "".join(lines[start_line - 1:end])
+                    except Exception:
+                        pass
+                    break
+
+        return {
+            "symbol": best.metadata.get("symbol", name),
+            "found": True,
+            "file": file_path,
+            "start_line": start_line,
+            "end_line": end_line,
+            "language": best.metadata.get("language", ""),
+            "symbol_type": best.metadata.get("symbol_type", ""),
+            "branch": best.metadata.get("branch", ""),
+            "code": code,
+            "score": round(best.score, 4),
+        }
+
+    def _handle_get_references(self, params: dict) -> dict:
+        """Find all references to a symbol using the graph store.
+
+        Strategy:
+        1. Search edges by symbol name (LIKE match on source/target)
+        2. Find the file where the symbol is defined (via vector store)
+        3. Search edges whose target contains that file path (catches imports)
+        4. Deduplicate and return
+        """
+        symbol = params["symbol"]
+        repo_filter = params.get("repo", "")
+        branch_filter = params.get("branch", "")
+
+        # Step 1: Find the file where this symbol is defined
+        symbol_file = None
+        vector = self._embedding.embed_single(symbol)
+        results = self._vector_store.search(
+            vector=vector,
+            filter_conditions={"symbol": symbol} if symbol else None,
+            limit=1,
+        )
+        if results:
+            symbol_file = results[0].metadata.get("file", "")
+
+        all_refs = []
+        seen = set()  # dedup key: (file, line, kind)
+
+        for repo_path in self._get_indexed_repos():
+            repo_path = repo_path.rstrip("/")
+            if repo_filter and repo_filter.rstrip("/") not in repo_path:
+                continue
+            branches = [branch_filter] if branch_filter else self._get_repo_branches(repo_path)
+            for br in branches:
+                # Search by symbol name
+                edges = self._graph_store.find_references(repo_path, br, symbol)
+                for e in edges:
+                    key = (e.source_file, e.line, e.kind)
+                    if key not in seen:
+                        seen.add(key)
+                        all_refs.append({
+                            "source": e.source,
+                            "target": e.target,
+                            "kind": e.kind,
+                            "file": e.source_file,
+                            "line": e.line,
+                        })
+
+                # Search by file path of symbol definition (catches import edges)
+                # Use basename without extension because imports use relative paths
+                # e.g. symbol is in "apps/shell/.../admin-nui-local.component.ts"
+                #      but import target is "./admin-nui-local/admin-nui-local.component"
+                if symbol_file:
+                    import os
+                    file_basename = os.path.splitext(os.path.basename(symbol_file))[0]
+                    file_edges = self._graph_store.find_references(repo_path, br, file_basename)
+                    for e in file_edges:
+                        key = (e.source_file, e.line, e.kind)
+                        if key not in seen:
+                            seen.add(key)
+                            all_refs.append({
+                                "source": e.source,
+                                "target": e.target,
+                                "kind": e.kind,
+                                "file": e.source_file,
+                                "line": e.line,
+                            })
+
+        return {"symbol": symbol, "count": len(all_refs), "references": all_refs[:200]}
+
+    def _handle_remember(self, params: dict) -> dict:
+        """Save a memory entry — embed + store in vector DB with memory metadata."""
+        text = params["text"]
+        mem_type = params.get("type", "note")
+        scope = params.get("scope", "shared")
+        tags = params.get("tags", "")
+
+        from .stores.vector_store import VectorPoint
+        import hashlib
+        import time
+
+        vector = self._embedding.embed_single(text)
+        mem_id = hashlib.sha256(f"memory:{text[:100]}:{time.time()}".encode()).hexdigest()[:32]
+
+        point = VectorPoint(
+            id=mem_id,
+            vector=vector,
+            metadata={
+                "repo": "",
+                "branch": "",
+                "commit": "",
+                "file": "",
+                "symbol": "",
+                "symbol_type": "memory",
+                "language": "",
+                "start_line": 0,
+                "end_line": 0,
+                "chunk_level": "memory",
+                "content_hash": hashlib.sha256(text.encode()).hexdigest()[:16],
+                "is_deletion": False,
+                "memory_type": mem_type,
+                "memory_scope": scope,
+                "memory_tags": tags,
+            },
+            text=text,
+        )
+        self._vector_store.upsert([point])
+
+        return {
+            "saved": True,
+            "id": mem_id,
+            "type": mem_type,
+            "scope": scope,
+            "tags": tags,
+        }
+
+    def _handle_recall(self, params: dict) -> dict:
+        """Search memories using semantic similarity."""
+        query = params["query"]
+        limit = params.get("limit", 5)
+        scope = params.get("scope")
+        mem_type = params.get("type")
+
+        vector = self._embedding.embed_single(query)
+
+        filters = {"chunk_level": "memory"}
+        if scope:
+            filters["memory_scope"] = scope
+        if mem_type:
+            filters["memory_type"] = mem_type
+
+        results = self._vector_store.search(
+            vector=vector,
+            filter_conditions=filters,
+            limit=limit,
+        )
+
+        return {
+            "query": query,
+            "count": len(results),
+            "memories": [
+                {
+                    "id": r.id,
+                    "text": r.text,
+                    "score": round(r.score, 4),
+                    "type": r.metadata.get("memory_type", ""),
+                    "scope": r.metadata.get("memory_scope", ""),
+                    "tags": r.metadata.get("memory_tags", ""),
+                }
+                for r in results
+            ],
+        }
+
+    def _handle_get_branch_context(self, params: dict) -> dict:
+        """Get current branch info + index stats from SQLite."""
+        branch = params.get("branch")
+        repo = params.get("repo")
+
+        repos_info = []
+        for repo_path in self._get_indexed_repos():
+            if repo and repo != repo_path:
+                continue
+            branches = self._get_repo_branches(repo_path)
+            for br in branches:
+                record = self._index_store.get_last_indexed(repo_path, br)
+                if record:
+                    repos_info.append({
+                        "repo": repo_path,
+                        "branch": br,
+                        "last_commit": record.last_commit,
+                        "model": record.model_name,
+                        "files": record.file_count,
+                        "symbols": record.symbol_count,
+                        "chunks": record.chunk_count,
+                        "indexed_at": record.indexed_at,
+                    })
+
+        # Filter by branch if specified
+        if branch:
+            repos_info = [r for r in repos_info if r["branch"] == branch]
+
+        return {
+            "count": len(repos_info),
+            "repos": repos_info,
+        }
+
+    def _handle_get_session_history(self, params: dict) -> dict:
+        """Get session history — for now return index operations from index_state."""
+        limit = params.get("limit", 20)
+
+        # Since we don't have a dedicated session table yet,
+        # return indexing events from index_state as history
+        events = []
+        for repo_path in self._get_indexed_repos():
+            branches = self._get_repo_branches(repo_path)
+            for br in branches:
+                record = self._index_store.get_last_indexed(repo_path, br)
+                if record:
+                    events.append({
+                        "timestamp": record.indexed_at,
+                        "event_type": "index",
+                        "tool": "index_repo",
+                        "summary": f"Indexed {repo_path} ({br}): {record.file_count} files, {record.symbol_count} symbols",
+                        "repo": repo_path,
+                        "branch": br,
+                    })
+
+        # Sort by timestamp descending
+        events.sort(key=lambda e: e["timestamp"], reverse=True)
+        return {
+            "count": len(events[:limit]),
+            "events": events[:limit],
+        }
+
+    def _handle_index_status(self, params: dict) -> dict:
+        """Get index status for all repos or a specific one."""
+        repo_filter = params.get("repo")
+
+        repos = []
+        for repo_path in self._get_indexed_repos():
+            if repo_filter and repo_filter != repo_path:
+                continue
+            branches = self._get_repo_branches(repo_path)
+            for br in branches:
+                record = self._index_store.get_last_indexed(repo_path, br)
+                if record:
+                    repos.append({
+                        "repo": repo_path,
+                        "name": repo_path.rstrip("/").split("/")[-1],
+                        "branch": br,
+                        "last_commit": record.last_commit,
+                        "model": record.model_name,
+                        "dimension": record.model_dimension,
+                        "files": record.file_count,
+                        "symbols": record.symbol_count,
+                        "chunks": record.chunk_count,
+                        "indexed_at": record.indexed_at,
+                        "status": "indexed",
+                    })
+
+        return {
+            "count": len(repos),
+            "repos": repos,
+        }
+
     def _handle_health(self, params: dict) -> dict:
         """Health check."""
         return {
@@ -193,11 +591,23 @@ class MLService:
 
 def serve_stdio(config: dict[str, Any] | None = None) -> None:
     """Run the ML service over stdin/stdout JSON-RPC."""
+    # Silence HuggingFace warnings and progress bars before any imports trigger them
+    import os
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         stream=sys.stderr,  # logs go to stderr, JSON-RPC goes to stdout
     )
+    # Silence noisy libraries — nobody wants 30 lines of HTTP HEAD requests
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+    logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+    logging.getLogger("transformers").setLevel(logging.WARNING)
+    logging.getLogger("torch").setLevel(logging.WARNING)
 
     service = MLService(config)
 
@@ -230,19 +640,22 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="DevAI ML Service")
     parser.add_argument("--config", type=str, help="Path to config YAML file")
-    parser.add_argument("--state-dir", type=str, default=".devai/state", help="State directory")
+    parser.add_argument("--state-dir", type=str, default=None, help="State directory (default: ~/.local/share/devai/state/)")
     parser.add_argument("--model", type=str, default="minilm-l6", help="Embedding model key")
     parser.add_argument("--device", type=str, default="cpu", help="Device (cpu/cuda)")
     args = parser.parse_args()
 
     config = {
-        "state_dir": args.state_dir,
         "embeddings": {
             "provider": "local",
             "model": args.model,
             "device": args.device,
         },
     }
+
+    # --state-dir CLI flag takes priority over config file
+    if args.state_dir:
+        config["state_dir"] = args.state_dir
 
     if args.config:
         import yaml
