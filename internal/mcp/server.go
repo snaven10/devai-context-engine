@@ -243,10 +243,14 @@ func (s *Server) handleSearch(ctx context.Context, request mcplib.CallToolReques
 	limit := argFloat(a, "limit", 10)
 	branch := argString(a, "branch", "")
 	language := argString(a, "language", "")
+	repo := argString(a, "repo", "")
 
 	params := map[string]interface{}{
 		"query": query,
 		"limit": int(limit),
+	}
+	if repo != "" {
+		params["repo"] = repo
 	}
 	if branch != "" {
 		params["branch"] = branch

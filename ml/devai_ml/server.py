@@ -150,12 +150,15 @@ class MLService:
         limit = params.get("limit", 10)
         branch = params.get("branch")
         language = params.get("language")
+        repo = params.get("repo", "")
 
         # Embed the query
         vector = self._embedding.embed_single(query)
 
         # Build filter
         filters = {}
+        if repo:
+            filters["repo"] = repo.rstrip("/")
         if branch:
             filters["branch"] = branch
         if language:
