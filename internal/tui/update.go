@@ -199,8 +199,8 @@ func (m Model) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.screen = ScreenMemory
 		m.memoryInput.Focus()
 		m.loading = true
-		// Load recent memories on enter (broad query)
-		return m, tea.Batch(textinput.Blink, searchMemory(m.client, "*"))
+		// Load recent memories on enter
+		return m, tea.Batch(textinput.Blink, loadRecentMemories(m.client))
 	case 4: // Session History
 		m.prevScreen = m.screen
 		m.screen = ScreenHistory
@@ -417,8 +417,37 @@ func (m Model) updateMemory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		} else if m.memoryIndex < len(m.memories) {
 			mem := m.memories[m.memoryIndex]
-			m.detailTitle = mem.Type + " — " + mem.CreatedAt
-			m.detailText = mem.Text
+			title := mem.Title
+			if title == "" {
+				title = truncate(mem.Content, 60)
+			}
+			m.detailTitle = fmt.Sprintf("[%s] %s", mem.Type, title)
+
+			// Build rich detail text
+			var detail strings.Builder
+			if mem.Project != "" {
+				detail.WriteString(fmt.Sprintf("Project: %s\n", mem.Project))
+			}
+			if mem.TopicKey != "" {
+				detail.WriteString(fmt.Sprintf("Topic: %s\n", mem.TopicKey))
+			}
+			if mem.Tags != "" {
+				detail.WriteString(fmt.Sprintf("Tags: %s\n", mem.Tags))
+			}
+			if mem.Files != "" {
+				detail.WriteString(fmt.Sprintf("Files: %s\n", mem.Files))
+			}
+			if mem.RevisionCount > 1 {
+				detail.WriteString(fmt.Sprintf("Revisions: %d\n", mem.RevisionCount))
+			}
+			if mem.CreatedAt != "" {
+				detail.WriteString(fmt.Sprintf("Created: %s\n", mem.CreatedAt))
+			}
+			if mem.UpdatedAt != "" && mem.UpdatedAt != mem.CreatedAt {
+				detail.WriteString(fmt.Sprintf("Updated: %s\n", mem.UpdatedAt))
+			}
+			detail.WriteString("\n" + mem.Content)
+			m.detailText = detail.String()
 			m.scrollOffset = 0
 			m.prevScreen = m.screen
 			m.screen = ScreenDetail

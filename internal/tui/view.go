@@ -334,12 +334,39 @@ func (m Model) viewMemory() string {
 		if i == m.memoryIndex {
 			cursor = "▸ "
 		}
-		b.WriteString(fmt.Sprintf("%s%s  %s  %s\n",
+		// Show title (or truncated content if no title)
+		displayText := mem.Title
+		if displayText == "" {
+			displayText = truncate(mem.Content, 50)
+		}
+
+		// Project badge
+		project := ""
+		if mem.Project != "" {
+			project = styleSearchPrompt.Render("["+mem.Project+"]") + " "
+		}
+
+		// Revision indicator
+		rev := ""
+		if mem.RevisionCount > 1 {
+			rev = fmt.Sprintf(" (rev %d)", mem.RevisionCount)
+		}
+
+		b.WriteString(fmt.Sprintf("%s%s %s%s%s\n",
 			cursor,
-			styleResultSymbol.Render(mem.Type),
-			styleResultLine.Render(mem.CreatedAt),
-			truncate(mem.Text, 60),
+			styleResultSymbol.Render(fmt.Sprintf("[%s]", mem.Type)),
+			project,
+			displayText,
+			rev,
 		))
+
+		// Show topic_key on second line if selected
+		if i == m.memoryIndex && mem.TopicKey != "" {
+			b.WriteString(fmt.Sprintf("    %s  %s\n",
+				styleResultLine.Render("topic: "+mem.TopicKey),
+				styleResultLine.Render("tags: "+mem.Tags),
+			))
+		}
 	}
 
 	return b.String()

@@ -109,12 +109,19 @@ type BranchInfo struct {
 }
 
 type MemoryEntry struct {
-	ID        int
-	Text      string
-	Type      string
-	Scope     string
-	Tags      string
-	CreatedAt string
+	ID            int
+	Title         string
+	Content       string
+	Type          string
+	Scope         string
+	Project       string
+	TopicKey      string
+	Tags          string
+	Files         string
+	RevisionCount int
+	Score         float64
+	CreatedAt     string
+	UpdatedAt     string
 }
 
 type SessionEvent struct {
@@ -287,6 +294,19 @@ func searchMemory(client *mlclient.StdioClient, query string) tea.Cmd {
 	}
 }
 
+func loadRecentMemories(client *mlclient.StdioClient) tea.Cmd {
+	return func() tea.Msg {
+		result, err := client.Call("memory_context", map[string]interface{}{
+			"limit": 20,
+		})
+		if err != nil {
+			return memoryResultsMsg{Error: err}
+		}
+		memories := parseMemoryEntries(result)
+		return memoryResultsMsg{Results: memories}
+	}
+}
+
 func indexRepo(client *mlclient.StdioClient, path string) tea.Cmd {
 	return func() tea.Msg {
 		result, err := client.Call("index_repo", map[string]interface{}{
@@ -435,14 +455,54 @@ func parseMemoryEntries(result interface{}) []MemoryEntry {
 		if !ok {
 			continue
 		}
+		// Content field: new API uses "content", old uses "text"
+		content := getString(e, "content")
+		if content == "" {
+			content = getString(e, "text")
+		}
 		entries = append(entries, MemoryEntry{
-			Text:  getString(e, "text"),
-			Type:  getString(e, "type"),
-			Scope: getString(e, "scope"),
-			Tags:  getString(e, "tags"),
+			ID:            getInt(e, "id"),
+			Title:         getString(e, "title"),
+			Content:       content,
+			Type:          getString(e, "type"),
+			Scope:         getString(e, "scope"),
+			Project:       getString(e, "project"),
+			TopicKey:      getString(e, "topic_key"),
+			Tags:          getString(e, "tags"),
+			Files:         getString(e, "files"),
+			RevisionCount: getInt(e, "revision_count"),
+			Score:         getFloat(e, "score"),
+			CreatedAt:     getString(e, "created_at"),
+			UpdatedAt:     getString(e, "updated_at"),
 		})
 	}
 	return entries
+}
+
+func getInt(m map[string]interface{}, key string) int {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	}
+	return 0
+}
+
+func getFloat(m map[string]interface{}, key string) float64 {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	f, ok := v.(float64)
+	if !ok {
+		return 0
+	}
+	return f
 }
 
 func getString(m map[string]interface{}, key string) string {
@@ -457,26 +517,3 @@ func getString(m map[string]interface{}, key string) string {
 	return s
 }
 
-func getInt(m map[string]interface{}, key string) int {
-	v, ok := m[key]
-	if !ok {
-		return 0
-	}
-	f, ok := v.(float64)
-	if !ok {
-		return 0
-	}
-	return int(f)
-}
-
-func getFloat(m map[string]interface{}, key string) float64 {
-	v, ok := m[key]
-	if !ok {
-		return 0
-	}
-	f, ok := v.(float64)
-	if !ok {
-		return 0
-	}
-	return f
-}
