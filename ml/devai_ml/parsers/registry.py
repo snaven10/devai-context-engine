@@ -40,14 +40,40 @@ EXTENSION_MAP: dict[str, str] = {
     ".zig": "zig",
     ".ex": "elixir",
     ".exs": "elixir",
+    # Template/style files — indexed as raw text (no AST)
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".sass": "sass",
+    ".less": "less",
+    ".json": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".xml": "xml",
+    ".svg": "xml",
+    ".md": "markdown",
+    ".sql": "sql",
+    ".graphql": "graphql",
+    ".gql": "graphql",
+    ".proto": "protobuf",
 }
 
-# Languages with available tree-sitter grammars via tree-sitter-languages
-SUPPORTED_LANGUAGES: set[str] = {
+# Languages with tree-sitter grammars (AST-based parsing)
+TREE_SITTER_LANGUAGES: set[str] = {
     "python", "javascript", "typescript", "go", "java", "rust",
     "c", "cpp", "ruby", "php", "kotlin", "swift", "scala", "dart",
     "c_sharp", "lua", "zig", "elixir",
 }
+
+# Languages indexed as raw text (no AST, but still chunked + embedded)
+RAW_TEXT_LANGUAGES: set[str] = {
+    "html", "css", "scss", "sass", "less",
+    "json", "yaml", "xml", "markdown",
+    "sql", "graphql", "protobuf",
+}
+
+SUPPORTED_LANGUAGES: set[str] = TREE_SITTER_LANGUAGES | RAW_TEXT_LANGUAGES
 
 
 class ParserRegistry:
@@ -70,8 +96,12 @@ class ParserRegistry:
             return None
         if lang not in self._parsers:
             try:
-                from .treesitter_parser import TreeSitterLanguageParser
-                self._parsers[lang] = TreeSitterLanguageParser(lang)
+                if lang in RAW_TEXT_LANGUAGES:
+                    from .raw_parser import RawTextParser
+                    self._parsers[lang] = RawTextParser(lang)
+                else:
+                    from .treesitter_parser import TreeSitterLanguageParser
+                    self._parsers[lang] = TreeSitterLanguageParser(lang)
                 logger.info("Loaded parser for %s", lang)
             except Exception as e:
                 logger.warning("Failed to load parser for %s: %s", lang, e)

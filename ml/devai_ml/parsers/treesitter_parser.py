@@ -146,9 +146,15 @@ class TreeSitterLanguageParser:
         return self._parse(source.encode("utf-8"), file_path)
 
     def _parse(self, source: bytes, file_path: str) -> ParseResult:
-        """Core parsing logic."""
+        """Core parsing logic.
+
+        IMPORTANT: We pass raw bytes to all extraction methods because
+        tree-sitter node.start_byte/end_byte are BYTE offsets, not character
+        offsets. Using decoded strings with byte offsets causes truncated
+        symbol names when the file contains multi-byte characters (ñ, ü, etc).
+        """
         tree = self._ts_parser.parse(source)
-        source_text = source.decode("utf-8", errors="replace")
+        source_text = source  # keep as bytes for correct byte-offset slicing
 
         if "symbols" in self._queries:
             symbols = self._extract_symbols_via_query(tree, source_text, file_path)
@@ -486,11 +492,17 @@ class TreeSitterLanguageParser:
     # ---- Helpers ----
 
     @staticmethod
-    def _node_text(node: Any, source: str) -> str:
-        """Get the text content of a tree-sitter node."""
+    def _node_text(node: Any, source: bytes | str) -> str:
+        """Get the text content of a tree-sitter node.
+
+        Handles both bytes (correct: byte offsets match) and str (legacy).
+        """
         if node is None:
             return ""
-        return source[node.start_byte:node.end_byte]
+        chunk = source[node.start_byte:node.end_byte]
+        if isinstance(chunk, bytes):
+            return chunk.decode("utf-8", errors="replace")
+        return chunk
 
     @staticmethod
     def _find_child(node: Any, field_name: str) -> Any | None:
@@ -501,11 +513,14 @@ class TreeSitterLanguageParser:
         return None
 
     @staticmethod
-    def _find_child_text(node: Any, field_name: str, source: str) -> str | None:
+    def _find_child_text(node: Any, field_name: str, source: bytes | str) -> str | None:
         """Find a child node's text by type name (e.g. 'name' -> identifier)."""
         for child in node.children:
             if child.type == field_name or child.type == "identifier" and field_name == "name":
-                return source[child.start_byte:child.end_byte]
+                chunk = source[child.start_byte:child.end_byte]
+                if isinstance(chunk, bytes):
+                    return chunk.decode("utf-8", errors="replace")
+                return chunk
         return None
 
     @staticmethod
