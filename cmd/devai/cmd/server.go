@@ -8,8 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/snaven10/devai/internal/config"
 	"github.com/snaven10/devai/internal/mcp"
 	"github.com/snaven10/devai/internal/mlclient"
+	"github.com/snaven10/devai/internal/runtime"
 	"github.com/snaven10/devai/internal/storage"
 )
 
@@ -48,22 +50,85 @@ func init() {
 	rootCmd.AddCommand(serverCmd)
 }
 
+// resolvedStorageConfig loads .devai/config.yaml and merges with env var overrides,
+// returning the project config and KEY=VALUE pairs ready to propagate to the ML sidecar.
+func resolvedStorageConfig() (*config.ProjectConfig, []string, error) {
+	projectCfg, _ := config.LoadConfigFromCWD()
+	router, err := storage.NewFromConfigWithEnvOverride(projectCfg)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolving storage config: %w", err)
+	}
+	return &projectCfg, router.EnvVars(), nil
+}
+
+// printSyncResult prints a formatted summary for push/pull/sync operations.
+func printSyncResult(op string, result interface{}) {
+	m, ok := result.(map[string]interface{})
+	if !ok {
+		fmt.Printf("%s complete.\n", op)
+		return
+	}
+
+	repo, _ := m["repo"].(string)
+	branch, _ := m["branch"].(string)
+	collection, _ := m["collection"].(string)
+
+	fmt.Printf("\n%s complete: %s\n", op, repo)
+	fmt.Printf("  Branch:     %s\n", branch)
+	fmt.Printf("  Collection: %s\n", collection)
+
+	// Branch breakdown
+	if branches, ok := m["branches"].(map[string]interface{}); ok && len(branches) > 0 {
+		fmt.Println("  Branches:")
+		for b, count := range branches {
+			fmt.Printf("    %-40s %v vectors\n", b, count)
+		}
+	}
+
+	// Operation-specific counts
+	if v, ok := m["pushed"]; ok {
+		fmt.Printf("  Pushed:     %v\n", v)
+	}
+	if v, ok := m["pulled"]; ok {
+		fmt.Printf("  Pulled:     %v\n", v)
+	}
+	if v, ok := m["total_local"]; ok {
+		fmt.Printf("  Local:      %v vectors\n", v)
+	}
+	if v, ok := m["total_remote"]; ok {
+		fmt.Printf("  Remote:     %v vectors\n", v)
+	}
+	if v, ok := m["conflicts"]; ok {
+		conflicts, _ := v.(float64)
+		if conflicts > 0 {
+			fmt.Printf("  Conflicts:  %v (resolved: %v)\n", v, m["resolution"])
+		}
+	}
+	if v, ok := m["errors"]; ok {
+		errors, _ := v.(float64)
+		if errors > 0 {
+			fmt.Printf("  Errors:     %v\n", v)
+		}
+	}
+	fmt.Println()
+}
+
 func runServerStart(cmd *cobra.Command, args []string) error {
 	model, _ := cmd.Flags().GetString("model")
 	stateDir, _ := cmd.Flags().GetString("state-dir")
 	background, _ := cmd.Flags().GetBool("background")
 
-	mlCmd := exec.Command("python3", "-m", "devai_ml.server",
+	projectCfg, storageEnv, err := resolvedStorageConfig()
+	if err != nil {
+		return err
+	}
+
+	pythonBin := runtime.FindPython(projectCfg)
+	mlCmd := exec.Command(pythonBin, "-m", "devai_ml.server",
 		"--model", model,
 		"--state-dir", stateDir,
 	)
-
-	// Propagate storage config env vars to the ML sidecar so it can
-	// select the correct vector store backend (local/shared/hybrid).
-	storageEnv := storage.EnvVarsFromEnv()
-	if len(storageEnv) > 0 {
-		mlCmd.Env = append(os.Environ(), storageEnv...)
-	}
+	mlCmd.Env = append(os.Environ(), storageEnv...)
 
 	if background {
 		mlCmd.Stdout = nil
@@ -89,12 +154,16 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 }
 
 func runServerMCP(cmd *cobra.Command, args []string) error {
+	projectCfg, storageEnv, err := resolvedStorageConfig()
+	if err != nil {
+		return err
+	}
+
 	// Start ML service as quiet sidecar (no logs to stderr — MCP uses stderr)
-	// Propagate storage config env vars for backend selection.
-	storageEnv := storage.EnvVarsFromEnv()
 	client, err := mlclient.NewStdioClient(
 		mlclient.WithQuiet(),
 		mlclient.WithEnv(storageEnv),
+		mlclient.WithConfig(projectCfg),
 	)
 	if err != nil {
 		return fmt.Errorf("starting ML service: %w", err)

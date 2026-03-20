@@ -7,22 +7,25 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/snaven10/devai/internal/config"
+	"github.com/snaven10/devai/internal/runtime"
 )
 
 // StdioClient communicates with the Python ML service via JSON-RPC over stdio.
 type StdioClient struct {
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   *bufio.Reader
-	mu       sync.Mutex
-	nextID   atomic.Int64
-	quiet    bool     // suppress stderr forwarding (for MCP mode)
-	extraEnv []string // additional env vars for the ML process ("KEY=VALUE")
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    *bufio.Reader
+	mu        sync.Mutex
+	nextID    atomic.Int64
+	quiet     bool                // suppress stderr forwarding (for MCP mode)
+	extraEnv  []string            // additional env vars for the ML process ("KEY=VALUE")
+	projectCfg *config.ProjectConfig // optional project config for python resolution
 }
 
 // Option configures the client.
@@ -39,6 +42,11 @@ func WithQuiet() Option {
 // current process environment (not replacing it).
 func WithEnv(env []string) Option {
 	return func(c *StdioClient) { c.extraEnv = env }
+}
+
+// WithConfig provides a project configuration for Python binary resolution.
+func WithConfig(cfg *config.ProjectConfig) Option {
+	return func(c *StdioClient) { c.projectCfg = cfg }
 }
 
 type jsonRPCRequest struct {
@@ -60,58 +68,19 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-// findPython locates the Python binary. Priority:
-// 1. DEVAI_PYTHON env var (explicit override)
-// 2. .devai/state/../../ml/.venv/bin/python (project venv)
-// 3. ml/.venv/bin/python (relative to cwd or devai binary)
-// 4. python3 (system fallback)
-func findPython() string {
-	// 1. Explicit env var
-	if p := os.Getenv("DEVAI_PYTHON"); p != "" {
-		return p
-	}
-
-	// 2. Find ml/.venv relative to the devai binary
-	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exe)
-		// Binary might be at repo root or in a bin/ dir
-		candidates := []string{
-			filepath.Join(exeDir, "ml", ".venv", "bin", "python"),
-			filepath.Join(exeDir, "..", "ml", ".venv", "bin", "python"),
-		}
-		for _, c := range candidates {
-			if _, err := os.Stat(c); err == nil {
-				return c
-			}
-		}
-	}
-
-	// 3. Relative to cwd
-	if cwd, err := os.Getwd(); err == nil {
-		venvPython := filepath.Join(cwd, "ml", ".venv", "bin", "python")
-		if _, err := os.Stat(venvPython); err == nil {
-			return venvPython
-		}
-	}
-
-	// 4. System fallback
-	return "python3"
-}
-
 // NewStdioClient starts the Python ML service and returns a client.
 // It waits for the DEVAI_ML_READY signal before returning.
 func NewStdioClient(opts ...Option) (*StdioClient, error) {
-	pythonBin := findPython()
-
-	cmd := exec.Command(pythonBin, "-m", "devai_ml.server")
-
-	// Apply options first so extraEnv is available before Start()
-	client := &StdioClient{
-		cmd: cmd,
-	}
+	// Apply options first so projectCfg is available for FindPython.
+	client := &StdioClient{}
 	for _, opt := range opts {
 		opt(client)
 	}
+
+	pythonBin := runtime.FindPython(client.projectCfg)
+
+	cmd := exec.Command(pythonBin, "-m", "devai_ml.server")
+	client.cmd = cmd
 
 	// Propagate extra env vars to the ML sidecar process.
 	// When cmd.Env is nil, the child inherits the parent's env.
