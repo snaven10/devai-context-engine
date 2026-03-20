@@ -164,12 +164,12 @@ resolve_devai_version() {
     if [[ -n "${VERSION}" ]]; then
         RELEASE_TAG="${VERSION}"
         info "Using specified version: ${RELEASE_TAG}"
+        RELEASE_INFO="$(fetch_json "${GITHUB_API}/tags/${RELEASE_TAG}")" || true
     else
         info "Fetching latest release from GitHub..."
-        local response
-        response="$(fetch_json "${GITHUB_API}/latest")" || die "Failed to fetch latest release info. Check your network."
+        RELEASE_INFO="$(fetch_json "${GITHUB_API}/latest")" || die "Failed to fetch latest release info. Check your network."
 
-        RELEASE_TAG="$(echo "${response}" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)"
+        RELEASE_TAG="$(echo "${RELEASE_INFO}" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)"
 
         if [[ -z "${RELEASE_TAG}" ]]; then
             die "Could not determine latest release tag."
@@ -326,6 +326,19 @@ install_python_deps() {
         else
             die "Could not find requirements file. Looked in release assets and ${local_req}"
         fi
+    fi
+
+    # Install devai_ml wheel from release
+    local wheel_url
+    wheel_url=$(echo "${RELEASE_INFO}" | grep -o '"browser_download_url":\s*"[^"]*devai_ml-[^"]*\.whl"' | head -1 | cut -d'"' -f4)
+    if [[ -n "${wheel_url}" ]]; then
+        local wheel_path="${TMP_DIR}/devai_ml.whl"
+        info "Installing devai_ml wheel..."
+        download "${wheel_url}" "${wheel_path}"
+        "${pip}" install "${wheel_path}" --quiet \
+            || die "Failed to install devai_ml wheel."
+    else
+        warn "devai_ml wheel not found in release assets — ML features will not work."
     fi
 
     success "Python dependencies installed"

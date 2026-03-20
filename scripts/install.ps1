@@ -298,6 +298,19 @@ try {
     }
 
     if ($LASTEXITCODE -ne 0) { throw "Failed to install Python dependencies." }
+
+    # Install devai_ml wheel from release
+    $wheelAsset = $releaseInfo.assets | Where-Object { $_.name -like "devai_ml-*.whl" } | Select-Object -First 1
+    if ($wheelAsset) {
+        $wheelPath = Join-Path $tmpDir $wheelAsset.name
+        Write-Info "Installing devai_ml wheel..."
+        Invoke-Download -Url $wheelAsset.browser_download_url -Dest $wheelPath
+        & $pip install $wheelPath --quiet
+        if ($LASTEXITCODE -ne 0) { throw "Failed to install devai_ml wheel." }
+    } else {
+        Write-Warn "devai_ml wheel not found in release assets — ML features will not work."
+    }
+
     Write-Ok "Python dependencies installed"
 
     # ── PATH Setup ────────────────────────────────────────────────────────
