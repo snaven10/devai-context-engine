@@ -32,6 +32,8 @@ ml/devai_ml/proto/*_pb2.pyi
 # Dotfolders (IDE, AI tools, config)
 .*
 !.gitignore
+!.github/
+!.goreleaser.yaml
 
 # IDE (redundant but explicit)
 .idea/
@@ -41,8 +43,9 @@ ml/devai_ml/proto/*_pb2.pyi
 *~
 .DS_Store
 
-# DevAI state
-.devai/
+# DevAI state (keep config, ignore state)
+.devai/state/
+!.devai/config.yaml
 *.db
 *.db-journal
 *.db-wal

@@ -1,0 +1,50 @@
+version: 2
+
+builds:
+  - main: ./cmd/devai
+    binary: devai
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - name_template: "devai_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - LICENSE*
+      - README.md
+      - scripts/install.sh
+      - scripts/install.ps1
+      - scripts/requirements-cpu.txt
+      - scripts/requirements-gpu.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+
+release:
+  github:
+    owner: snaven10
+    name: devai-context-engine
+  extra_files:
+    - glob: scripts/install.sh
+    - glob: scripts/install.ps1
+    - glob: scripts/requirements-cpu.txt
+    - glob: scripts/requirements-gpu.txt
