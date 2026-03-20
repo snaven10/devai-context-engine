@@ -148,7 +148,7 @@ try {
     # ── Download & Install Binary ─────────────────────────────────────────
     Write-Step "Installing DevAI binary"
 
-    $archiveName = "devai_windows_$($platform.Arch).tar.gz"
+    $archiveName = "devai_windows_$($platform.Arch).zip"
     $downloadUrl = "https://github.com/$Repo/releases/download/$releaseTag/$archiveName"
     $archivePath = Join-Path $tmpDir $archiveName
 
@@ -157,8 +157,8 @@ try {
 
     New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 
-    # Extract tar.gz — PowerShell 5.1+ with tar (Windows 10 1803+)
-    tar -xzf $archivePath -C $tmpDir
+    # Extract zip
+    Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
     $binary = Get-ChildItem -Path $tmpDir -Recurse -Filter "devai.exe" | Select-Object -First 1
     if (-not $binary) {
         # Try without .exe (might be renamed during extraction)
