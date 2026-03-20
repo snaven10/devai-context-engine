@@ -85,7 +85,98 @@ indexing:
 | `DEVAI_PYTHON` | Python binary path | Auto-detected (venv or system) |
 | `DEVAI_ML_MODEL` | Embedding model name | `minilm-l6` |
 | `DEVAI_STORAGE_MODE` | `local`, `shared`, or `hybrid` | `local` |
+| `DEVAI_QDRANT_URL` | Qdrant gRPC endpoint (host:port) | `localhost:6334` |
+| `DEVAI_QDRANT_API_KEY` | Qdrant API key (optional) | — |
+| `DEVAI_LOCAL_DB_PATH` | LanceDB directory path | `{state_dir}/vectors` |
 | `DEVAI_API_TOKEN` | Authentication token for shared mode | — |
+
+---
+
+## Storage Modes
+
+DevAI supports three storage modes that control where vector embeddings are stored.
+
+### Local (default)
+
+Vectors stored in LanceDB on disk. Zero configuration, works offline.
+
+- Best for: single machine, personal use
+- No network dependency
+
+### Shared
+
+Vectors stored in Qdrant (remote). Enables team-wide code search.
+
+- Best for: teams sharing a codebase index
+- Requires: Qdrant instance running
+
+### Hybrid
+
+Write-through to both LanceDB (local) and Qdrant (shared). Searches local first, falls back to shared.
+
+- Best for: team use with offline resilience
+- Graceful degradation: if Qdrant is unreachable, continues with local
+- Retry queue: failed shared writes are queued and replayed on reconnect
+
+### Configuration
+
+**Environment variables:**
+
+```bash
+export DEVAI_STORAGE_MODE=hybrid          # local | shared | hybrid
+export DEVAI_QDRANT_URL=localhost:6334    # Qdrant gRPC endpoint
+export DEVAI_QDRANT_API_KEY=your-key      # optional
+```
+
+**Claude Code settings.json** (recommended for persistent config):
+
+In `~/.claude/settings.json`, add to your MCP server config:
+
+```json
+{
+  "mcpServers": {
+    "devai": {
+      "command": "/path/to/devai",
+      "args": ["server", "mcp"],
+      "env": {
+        "DEVAI_STORAGE_MODE": "hybrid",
+        "DEVAI_QDRANT_URL": "localhost:6334",
+        "DEVAI_STATE_DIR": "/home/user/.local/share/devai/state"
+      }
+    }
+  }
+}
+```
+
+Or in project-level `.claude/settings.json` for per-project config.
+
+### Running Qdrant
+
+**Standalone (just Qdrant):**
+
+```bash
+docker run -d --name qdrant \
+  -p 6333:6333 -p 6334:6334 \
+  -v qdrant-data:/qdrant/storage \
+  qdrant/qdrant:latest
+```
+
+**With Docker Compose (included in repo):**
+
+```bash
+docker compose up -d qdrant
+```
+
+Dashboard: http://localhost:6333/dashboard
+
+### Migrating Existing Local Indexes to Shared
+
+If you already have repos indexed locally and switch to hybrid/shared mode:
+
+1. Your local indexes remain intact
+2. Use `devai push-index --repo <name>` to push local vectors to Qdrant
+3. In hybrid mode, searches work immediately (read-local-first)
+4. Push is idempotent — safe to run multiple times
 
 ---
 

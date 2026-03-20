@@ -191,3 +191,57 @@ The TUI provides a complete interface for browsing and managing indexes without 
 - **Detail view** — full code with line numbers
 
 Built with Bubbletea v1 + Bubbles + Lipgloss. State machine pattern: Model (state) → Update (events) → View (render).
+
+---
+
+## 11. Multi-Backend Storage
+
+**Problem:** Single-machine vector storage doesn't scale to teams. Developers can't share code intelligence across machines.
+
+**Solution:** Three storage modes with transparent backend switching.
+
+**How hybrid mode works:**
+
+- **Write-through:** Every upsert goes to local LanceDB first, then to shared Qdrant
+- **Read-local-first:** Searches query local store first. If local returns results, those are used. If empty, falls back to shared Qdrant
+- **Graceful degradation:** If Qdrant is unreachable, DevAI continues with local-only mode. Failed writes are queued in a bounded retry queue (max 10,000 operations)
+- **Health monitoring:** Background thread checks Qdrant health every 60 seconds. On recovery, queued operations are automatically flushed
+- **ID mapping:** LanceDB string IDs are mapped to Qdrant UUIDs via deterministic UUID5 (same ID always produces same UUID — idempotent upserts)
+
+**Push/Pull synchronization:**
+
+- `devai push-index` — copies local vectors to Qdrant (local → shared)
+- `devai pull-index` — copies Qdrant vectors to local (shared → local)
+- `devai sync-index` — bidirectional merge with last-write-wins conflict resolution via `indexed_at` timestamps
+
+---
+
+## 12. Index Synchronization (Push/Pull/Sync)
+
+**Problem:** Developers index repos locally but need to share with the team. Or they need to pull team indexes to a new machine.
+
+**Solution:** Three CLI commands for bidirectional index synchronization.
+
+**Push (local → shared):**
+
+```
+devai push-index --repo my-repo [--branch main]
+```
+
+Reads all vectors from local LanceDB via `scroll_all()`, maps IDs to UUID5, and upserts to Qdrant in batches of 1000.
+
+**Pull (shared → local):**
+
+```
+devai pull-index --repo my-repo [--branch main]
+```
+
+Reads all vectors from Qdrant via `scroll_all()`, restores original LanceDB IDs from `_lance_id` payload, and upserts to local store.
+
+**Sync (bidirectional):**
+
+```
+devai sync-index --repo my-repo [--branch main]
+```
+
+Additive merge — no deletes. Conflict resolution: last-write-wins based on `indexed_at` timestamp.

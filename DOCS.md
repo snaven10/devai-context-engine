@@ -21,7 +21,7 @@ System overview, component diagram, project structure, design decisions, and gRP
 
 ### [JSON-RPC API](docs/api.md)
 
-Complete reference for the 16 Python ML service methods.
+Complete reference for the 19 Python ML service methods.
 
 - **Embedding:** `embed`, `embed_batch`
 - **Search:** `search`, `read_symbol`, `get_references`
@@ -33,11 +33,12 @@ All methods documented with exact params and return schemas.
 
 ### [MCP Tools](docs/mcp-tools.md)
 
-Reference for the 14 MCP tools exposed via `devai server mcp`.
+Reference for the 17 MCP tools exposed via `devai server mcp`.
 
 - **Search & Read:** `search`, `read_file`, `build_context`, `read_symbol`, `get_references`
 - **Indexing & Status:** `index_repo`, `index_status`, `get_branch_context`, `switch_context`, `get_session_history`
 - **Memory:** `remember`, `recall`, `memory_context`, `memory_stats`
+- **Sync:** `push_index`, `pull_index`, `sync_index`
 
 Each tool with parameters, types, defaults, and required flags.
 
@@ -57,7 +58,10 @@ Installation, configuration, dependencies, Makefile targets, and Docker.
 
 - From source, Docker, binary locations
 - Project config (`.devai/config.yaml`)
-- 5 environment variables
+- 8 environment variables
+- Storage mode configuration (local, shared, hybrid)
+- Claude Code MCP server setup
+- Qdrant deployment options
 - 4 embedding providers
 - Go dependencies (7 packages with versions)
 - Python dependencies (8 core + 2 optional)
@@ -66,7 +70,7 @@ Installation, configuration, dependencies, Makefile targets, and Docker.
 
 ### [Features Deep Dive](docs/features.md)
 
-10 features explained with Problem → Solution → How It Works.
+12 features explained with Problem → Solution → How It Works.
 
 1. Semantic Code Search
 2. AST-Aware Semantic Chunking
@@ -78,6 +82,16 @@ Installation, configuration, dependencies, Makefile targets, and Docker.
 8. Multi-Language Support (25+ languages)
 9. Embedding Provider Flexibility
 10. Interactive TUI
+11. Multi-Backend Storage
+12. Index Synchronization (Push/Pull/Sync)
+
+### [Storage Modes](docs/setup.md#storage-modes)
+
+Configuration guide for local, shared, and hybrid storage backends with Qdrant.
+
+- Claude Code settings.json configuration
+- Docker Compose setup for Qdrant
+- Migrating existing local indexes
 
 ---
 

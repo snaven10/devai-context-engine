@@ -4,7 +4,7 @@
 
 ---
 
-All 14 tools are registered in `internal/mcp/server.go` and exposed via the MCP stdio protocol. Start with `devai server mcp`.
+All 17 tools are registered in `internal/mcp/server.go` and exposed via the MCP stdio protocol. Start with `devai server mcp`.
 
 ---
 
@@ -147,3 +147,31 @@ Get recent memories without search — quick context recovery.
 Get memory system statistics: total count, breakdown by type and project.
 
 **Parameters:** none
+
+---
+
+## Index Synchronization
+
+### push_index
+
+Push local vectors to shared Qdrant store. Requires shared or hybrid storage mode.
+
+**Parameters:**
+- **`repo`** (required) — repository name
+- `branch` — branch filter (default: all branches)
+
+### pull_index
+
+Pull vectors from shared Qdrant store to local. Requires shared or hybrid storage mode.
+
+**Parameters:**
+- **`repo`** (required) — repository name
+- `branch` — branch filter (default: all branches)
+
+### sync_index
+
+Bidirectional sync between local and shared stores. Additive only (no deletes). Uses `indexed_at` timestamps for conflict resolution.
+
+**Parameters:**
+- **`repo`** (required) — repository name
+- `branch` — branch filter (default: all branches)
