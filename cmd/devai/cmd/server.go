@@ -10,6 +10,7 @@ import (
 
 	"github.com/snaven10/devai/internal/mcp"
 	"github.com/snaven10/devai/internal/mlclient"
+	"github.com/snaven10/devai/internal/storage"
 )
 
 var serverCmd = &cobra.Command{
@@ -57,6 +58,13 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 		"--state-dir", stateDir,
 	)
 
+	// Propagate storage config env vars to the ML sidecar so it can
+	// select the correct vector store backend (local/shared/hybrid).
+	storageEnv := storage.EnvVarsFromEnv()
+	if len(storageEnv) > 0 {
+		mlCmd.Env = append(os.Environ(), storageEnv...)
+	}
+
 	if background {
 		mlCmd.Stdout = nil
 		mlCmd.Stderr = nil
@@ -82,7 +90,12 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 
 func runServerMCP(cmd *cobra.Command, args []string) error {
 	// Start ML service as quiet sidecar (no logs to stderr — MCP uses stderr)
-	client, err := mlclient.NewStdioClient(mlclient.WithQuiet())
+	// Propagate storage config env vars for backend selection.
+	storageEnv := storage.EnvVarsFromEnv()
+	client, err := mlclient.NewStdioClient(
+		mlclient.WithQuiet(),
+		mlclient.WithEnv(storageEnv),
+	)
 	if err != nil {
 		return fmt.Errorf("starting ML service: %w", err)
 	}

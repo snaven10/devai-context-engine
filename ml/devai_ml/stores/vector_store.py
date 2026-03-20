@@ -1,9 +1,12 @@
+"""Vector store protocol and LanceDB implementation for code embeddings."""
+
 from __future__ import annotations
 
 import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
@@ -51,6 +54,7 @@ class VectorStore(Protocol):
     def rename_file(self, repo: str, branch: str, old_path: str, new_path: str) -> None: ...
     def delete_collection(self) -> None: ...
     def count(self) -> int: ...
+    def scroll_all(self, repo: str, branch: str) -> list[VectorPoint]: ...
 
 
 class LanceDBVectorStore:
@@ -78,7 +82,7 @@ class LanceDBVectorStore:
         """
         import pyarrow as pa
 
-        required = {"memory_type", "memory_scope", "memory_tags"}
+        required = {"memory_type", "memory_scope", "memory_tags", "indexed_at"}
         existing = set(self._table.schema.names)
         missing = required - existing
         if not missing:
@@ -138,6 +142,7 @@ class LanceDBVectorStore:
             pa.field("memory_type", pa.string()),    # insight, decision, note, bug
             pa.field("memory_scope", pa.string()),   # shared, local
             pa.field("memory_tags", pa.string()),    # comma-separated tags
+            pa.field("indexed_at", pa.string()),     # ISO 8601 timestamp for sync LWW
         ])
         return self._db.create_table(self._table_name, schema=schema)
 
@@ -165,6 +170,10 @@ class LanceDBVectorStore:
                 "memory_type": p.metadata.get("memory_type", ""),
                 "memory_scope": p.metadata.get("memory_scope", ""),
                 "memory_tags": p.metadata.get("memory_tags", ""),
+                "indexed_at": p.metadata.get(
+                    "indexed_at",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
             }
             data.append(row)
 
@@ -216,6 +225,7 @@ class LanceDBVectorStore:
                 "memory_type": str(table.column("memory_type")[i].as_py()) if "memory_type" in table.schema.names else "",
                 "memory_scope": str(table.column("memory_scope")[i].as_py()) if "memory_scope" in table.schema.names else "",
                 "memory_tags": str(table.column("memory_tags")[i].as_py()) if "memory_tags" in table.schema.names else "",
+                "indexed_at": str(table.column("indexed_at")[i].as_py()) if "indexed_at" in table.schema.names else "",
             }
             search_results.append(SearchResult(
                 id=str(table.column("id")[i].as_py()),
@@ -242,3 +252,40 @@ class LanceDBVectorStore:
 
     def count(self) -> int:
         return self._table.count_rows()
+
+    def scroll_all(self, repo: str, branch: str) -> list[VectorPoint]:
+        """Iterate all points for a repo+branch. Used by push/pull/sync."""
+        where = f"repo = '{repo}' AND branch = '{branch}'"
+        try:
+            table = self._table.search().where(where).to_arrow()
+        except Exception:
+            return []
+
+        schema_names = set(table.schema.names)
+        points = []
+        for i in range(table.num_rows):
+            metadata = {
+                "repo": str(table.column("repo")[i].as_py()),
+                "branch": str(table.column("branch")[i].as_py()),
+                "commit": str(table.column("commit")[i].as_py()),
+                "file": str(table.column("file")[i].as_py()),
+                "symbol": str(table.column("symbol")[i].as_py()),
+                "symbol_type": str(table.column("symbol_type")[i].as_py()),
+                "language": str(table.column("language")[i].as_py()),
+                "start_line": int(table.column("start_line")[i].as_py()),
+                "end_line": int(table.column("end_line")[i].as_py()),
+                "chunk_level": str(table.column("chunk_level")[i].as_py()),
+                "content_hash": str(table.column("content_hash")[i].as_py()),
+                "is_deletion": bool(table.column("is_deletion")[i].as_py()),
+                "memory_type": str(table.column("memory_type")[i].as_py()) if "memory_type" in schema_names else "",
+                "memory_scope": str(table.column("memory_scope")[i].as_py()) if "memory_scope" in schema_names else "",
+                "memory_tags": str(table.column("memory_tags")[i].as_py()) if "memory_tags" in schema_names else "",
+                "indexed_at": str(table.column("indexed_at")[i].as_py()) if "indexed_at" in schema_names else "",
+            }
+            points.append(VectorPoint(
+                id=str(table.column("id")[i].as_py()),
+                vector=list(table.column("vector")[i].as_py()),
+                metadata=metadata,
+                text=str(table.column("text")[i].as_py()),
+            ))
+        return points

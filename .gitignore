@@ -29,7 +29,11 @@ ml/devai_ml/proto/*_pb2.py
 ml/devai_ml/proto/*_pb2_grpc.py
 ml/devai_ml/proto/*_pb2.pyi
 
-# IDE
+# Dotfolders (IDE, AI tools, config)
+.*
+!.gitignore
+
+# IDE (redundant but explicit)
 .idea/
 .vscode/
 *.swp

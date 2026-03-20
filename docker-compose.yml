@@ -12,6 +12,7 @@ services:
       - DEVAI_STATE_DIR=/data/state
       - DEVAI_ML_MODEL=minilm-l6
       - DEVAI_STORAGE_MODE=shared
+      - DEVAI_QDRANT_URL=qdrant:6334
       - DEVAI_API_TOKEN=${DEVAI_API_TOKEN:-devai-dev-token}
     depends_on:
       - qdrant

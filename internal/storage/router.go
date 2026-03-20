@@ -2,6 +2,8 @@ package storage
 
 import (
 	"fmt"
+	"os"
+	"strings"
 )
 
 // Mode determines where data is stored.
@@ -73,7 +75,75 @@ func (r *Router) Validate() error {
 			return fmt.Errorf("hybrid mode requires a server URL")
 		}
 	default:
-		return fmt.Errorf("unknown storage mode: %s", r.config.Mode)
+		return fmt.Errorf("unknown storage mode: %s. Valid modes: local, shared, hybrid", r.config.Mode)
 	}
 	return nil
+}
+
+// NewFromEnv creates a Router from environment variables.
+//
+// Reads: DEVAI_STORAGE_MODE (case-insensitive, default "local"),
+// DEVAI_QDRANT_URL, DEVAI_QDRANT_API_KEY, DEVAI_LOCAL_DB_PATH.
+func NewFromEnv() (*Router, error) {
+	mode := Mode(strings.ToLower(os.Getenv("DEVAI_STORAGE_MODE")))
+	if mode == "" {
+		mode = ModeLocal
+	}
+
+	localPath := os.Getenv("DEVAI_LOCAL_DB_PATH")
+	if localPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("cannot determine home directory: %w", err)
+		}
+		localPath = home + "/.local/share/devai/state"
+	}
+
+	cfg := Config{
+		Mode:      mode,
+		LocalPath: localPath,
+		SharedURL: os.Getenv("DEVAI_QDRANT_URL"),
+		APIToken:  os.Getenv("DEVAI_QDRANT_API_KEY"),
+	}
+
+	r := New(cfg)
+	if err := r.Validate(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// EnvVars returns environment variables to propagate to the ML sidecar process.
+func (r *Router) EnvVars() []string {
+	return []string{
+		"DEVAI_STORAGE_MODE=" + string(r.config.Mode),
+		"DEVAI_QDRANT_URL=" + r.config.SharedURL,
+		"DEVAI_QDRANT_API_KEY=" + r.config.APIToken,
+		"DEVAI_LOCAL_DB_PATH=" + r.config.LocalPath,
+	}
+}
+
+// Mode returns the current storage mode.
+func (r *Router) Mode() Mode {
+	return r.config.Mode
+}
+
+// EnvVarsFromEnv reads storage-related environment variables and returns them
+// in "KEY=VALUE" format for propagation to child processes. This is a
+// convenience function that does NOT require a Router instance or validation —
+// it simply forwards whatever the parent process has set.
+func EnvVarsFromEnv() []string {
+	keys := []string{
+		"DEVAI_STORAGE_MODE",
+		"DEVAI_QDRANT_URL",
+		"DEVAI_QDRANT_API_KEY",
+		"DEVAI_LOCAL_DB_PATH",
+	}
+	var env []string
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			env = append(env, k+"="+v)
+		}
+	}
+	return env
 }

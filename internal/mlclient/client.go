@@ -16,12 +16,13 @@ import (
 
 // StdioClient communicates with the Python ML service via JSON-RPC over stdio.
 type StdioClient struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	stdout *bufio.Reader
-	mu     sync.Mutex
-	nextID atomic.Int64
-	quiet  bool // suppress stderr forwarding (for MCP mode)
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	mu       sync.Mutex
+	nextID   atomic.Int64
+	quiet    bool     // suppress stderr forwarding (for MCP mode)
+	extraEnv []string // additional env vars for the ML process ("KEY=VALUE")
 }
 
 // Option configures the client.
@@ -31,6 +32,13 @@ type Option func(*StdioClient)
 // Use this when running as MCP server to avoid polluting the MCP transport.
 func WithQuiet() Option {
 	return func(c *StdioClient) { c.quiet = true }
+}
+
+// WithEnv appends extra environment variables to the ML service process.
+// Each entry should be in "KEY=VALUE" format. These are merged with the
+// current process environment (not replacing it).
+func WithEnv(env []string) Option {
+	return func(c *StdioClient) { c.extraEnv = env }
 }
 
 type jsonRPCRequest struct {
@@ -97,6 +105,21 @@ func NewStdioClient(opts ...Option) (*StdioClient, error) {
 
 	cmd := exec.Command(pythonBin, "-m", "devai_ml.server")
 
+	// Apply options first so extraEnv is available before Start()
+	client := &StdioClient{
+		cmd: cmd,
+	}
+	for _, opt := range opts {
+		opt(client)
+	}
+
+	// Propagate extra env vars to the ML sidecar process.
+	// When cmd.Env is nil, the child inherits the parent's env.
+	// When extraEnv is set, we explicitly merge parent env + extras.
+	if len(client.extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), client.extraEnv...)
+	}
+
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("creating stdin pipe: %w", err)
@@ -117,14 +140,8 @@ func NewStdioClient(opts ...Option) (*StdioClient, error) {
 		return nil, fmt.Errorf("starting ML service (%s): %w", pythonBin, err)
 	}
 
-	client := &StdioClient{
-		cmd:    cmd,
-		stdin:  stdin,
-		stdout: bufio.NewReader(stdout),
-	}
-	for _, opt := range opts {
-		opt(client)
-	}
+	client.stdin = stdin
+	client.stdout = bufio.NewReader(stdout)
 
 	// Wait for DEVAI_ML_READY on stderr (model loaded)
 	ready := make(chan error, 1)
@@ -203,6 +220,33 @@ func (c *StdioClient) Call(method string, params interface{}) (interface{}, erro
 	}
 
 	return resp.Result, nil
+}
+
+// PushIndex pushes local vectors for a repo+branch to the shared Qdrant store.
+func (c *StdioClient) PushIndex(repo, branch string) (interface{}, error) {
+	params := map[string]string{"repo": repo}
+	if branch != "" {
+		params["branch"] = branch
+	}
+	return c.Call("push_index", params)
+}
+
+// PullIndex pulls vectors for a repo+branch from the shared Qdrant store to local.
+func (c *StdioClient) PullIndex(repo, branch string) (interface{}, error) {
+	params := map[string]string{"repo": repo}
+	if branch != "" {
+		params["branch"] = branch
+	}
+	return c.Call("pull_index", params)
+}
+
+// SyncIndex performs bidirectional sync between local and shared for a repo+branch.
+func (c *StdioClient) SyncIndex(repo, branch string) (interface{}, error) {
+	params := map[string]string{"repo": repo}
+	if branch != "" {
+		params["branch"] = branch
+	}
+	return c.Call("sync_index", params)
 }
 
 // Close stops the Python ML service.

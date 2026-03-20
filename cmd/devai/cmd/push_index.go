@@ -1,41 +1,49 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 
+	"github.com/snaven10/devai/internal/mlclient"
+	"github.com/snaven10/devai/internal/storage"
 	"github.com/spf13/cobra"
 )
 
 var pushIndexCmd = &cobra.Command{
-	Use:   "push-index [repo] [branch]",
-	Short: "Push local index to shared server",
-	Long:  `Upload your local index to the shared server so other developers can use it.`,
-	Args:  cobra.MaximumNArgs(2),
-	RunE:  runPushIndex,
+	Use:   "push-index",
+	Short: "Push local index to shared Qdrant store",
+	Long: `Upload your local vector index for a repository to the shared Qdrant store
+so other developers can pull and use it without re-indexing.
+
+Requires DEVAI_STORAGE_MODE=shared or hybrid and DEVAI_QDRANT_URL to be set.`,
+	RunE: runPushIndex,
 }
 
 func init() {
-	pushIndexCmd.Flags().String("server", "", "Shared server URL")
-	pushIndexCmd.Flags().String("token", "", "API token")
+	pushIndexCmd.Flags().String("repo", "", "Repository path or identifier (required)")
+	pushIndexCmd.Flags().String("branch", "", "Branch to push (default: current git branch)")
+	_ = pushIndexCmd.MarkFlagRequired("repo")
 	rootCmd.AddCommand(pushIndexCmd)
 }
 
 func runPushIndex(cmd *cobra.Command, args []string) error {
-	repo := "."
-	branch := ""
-	if len(args) > 0 {
-		repo = args[0]
+	repo, _ := cmd.Flags().GetString("repo")
+	branch, _ := cmd.Flags().GetString("branch")
+
+	fmt.Printf("Pushing index for repo=%s branch=%s ...\n", repo, branch)
+
+	client, err := mlclient.NewStdioClient(mlclient.WithEnv(storage.EnvVarsFromEnv()))
+	if err != nil {
+		return fmt.Errorf("connecting to ML service: %w", err)
 	}
-	if len(args) > 1 {
-		branch = args[1]
+	defer client.Close()
+
+	result, err := client.PushIndex(repo, branch)
+	if err != nil {
+		return fmt.Errorf("push-index failed: %w", err)
 	}
 
-	server, _ := cmd.Flags().GetString("server")
-	if server == "" {
-		return fmt.Errorf("--server is required for push-index")
-	}
-
-	fmt.Printf("Pushing index for %s/%s to %s...\n", repo, branch, server)
-	fmt.Println("(Push implementation pending — shared store integration)")
+	formatted, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(formatted))
 	return nil
 }

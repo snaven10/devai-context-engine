@@ -84,7 +84,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Watching %s (%d directories)\n", absPath, dirCount)
 	fmt.Printf("Debounce: %s\n", debounce)
-	fmt.Println("Press Ctrl+C to stop\n")
+	fmt.Println("Press Ctrl+C to stop")
 
 	// Debounce timer
 	var timer *time.Timer

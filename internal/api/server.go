@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/snaven10/devai/internal/mlclient"
 	"github.com/snaven10/devai/internal/session"
+	"github.com/snaven10/devai/internal/storage"
 )
 
 // Config holds API server configuration.
@@ -115,14 +117,27 @@ func (s *Server) handlePushIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TODO: Accept streamed index data and write to shared Qdrant + PostgreSQL
-	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"repo":   repo,
-		"branch": body.Branch,
-		"commit": body.Commit,
-		"status": "accepted",
-		"note":   "Index push — pending shared store integration",
-	})
+	client, err := mlclient.NewStdioClient(
+		mlclient.WithQuiet(),
+		mlclient.WithEnv(storage.EnvVarsFromEnv()),
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("starting ML service: %v", err),
+		})
+		return
+	}
+	defer client.Close()
+
+	result, err := client.PushIndex(repo, body.Branch)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("push-index failed: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handlePullIndex(w http.ResponseWriter, r *http.Request) {
@@ -134,13 +149,27 @@ func (s *Server) handlePullIndex(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&body)
 
-	// TODO: Stream index data from shared store
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"repo":   repo,
-		"branch": body.Branch,
-		"status": "ready",
-		"note":   "Index pull — pending shared store integration",
-	})
+	client, err := mlclient.NewStdioClient(
+		mlclient.WithQuiet(),
+		mlclient.WithEnv(storage.EnvVarsFromEnv()),
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("starting ML service: %v", err),
+		})
+		return
+	}
+	defer client.Close()
+
+	result, err := client.PullIndex(repo, body.Branch)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("pull-index failed: %v", err),
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleGetMemories(w http.ResponseWriter, r *http.Request) {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sys
@@ -11,6 +12,7 @@ from .embeddings.factory import create_provider
 from .embeddings.base import EmbeddingProvider
 from .parsers.registry import ParserRegistry
 from .pipeline.orchestrator import IndexPipeline
+from .stores.factory import StorageConfig, create_storage_config_from_env, create_vector_store
 from .stores.graph_store import SQLiteGraphStore
 from .stores.index_state import IndexStateStore
 from .stores.memory_store import Memory, MemoryStore
@@ -50,10 +52,21 @@ class MLService:
         state_dir.mkdir(parents=True, exist_ok=True)
         logger.info("State directory: %s", state_dir)
 
-        self._vector_store = LanceDBVectorStore(
-            db_path=str(state_dir / "vectors"),
-            dimension=self._embedding.dimension(),
+        # Vector store: use factory for backend selection (local/shared/hybrid).
+        # The factory reads DEVAI_STORAGE_MODE from env. Default is "local"
+        # which preserves backward compatibility — existing users see no change.
+        storage_config = create_storage_config_from_env()
+        # Override local_db_path with resolved state_dir (preserves priority logic above)
+        if not storage_config.local_db_path:
+            storage_config.local_db_path = str(state_dir / "vectors")
+        storage_config.dimension = self._embedding.dimension()
+        logger.info(
+            "Storage mode: %s (local_db=%s, qdrant=%s)",
+            storage_config.mode,
+            storage_config.local_db_path,
+            storage_config.qdrant_url if storage_config.mode != "local" else "n/a",
         )
+        self._vector_store = create_vector_store(storage_config)
         self._graph_store = SQLiteGraphStore(
             db_path=str(state_dir / "index.db"),
         )
@@ -116,6 +129,9 @@ class MLService:
             "get_branch_context": self._handle_get_branch_context,
             "get_session_history": self._handle_get_session_history,
             "index_status": self._handle_index_status,
+            "push_index": self._handle_push_index,
+            "pull_index": self._handle_pull_index,
+            "sync_index": self._handle_sync_index,
         }
 
         handler = handlers.get(method)
@@ -702,6 +718,255 @@ class MLService:
         return {
             "count": len(repos),
             "repos": repos,
+        }
+
+    def _handle_push_index(self, params: dict) -> dict:
+        """Push local vectors to shared Qdrant for a repo+branch.
+
+        Reads all vectors from the local LanceDB store via scroll_all(),
+        creates a temporary QdrantVectorStore from env config, and upserts
+        in batches of 100. Returns counts for pushed/skipped/errors.
+
+        Params:
+            repo (str): Required. Repository path or identifier.
+            branch (str): Optional. Git branch (default: "").
+
+        Returns:
+            {"pushed": N, "skipped": N, "errors": N}
+        """
+        repo = params.get("repo")
+        if not repo:
+            raise ValueError("push_index requires 'repo' parameter")
+        branch = params.get("branch", "")
+
+        config = create_storage_config_from_env()
+        if config.mode == "local":
+            raise ValueError(
+                "Cannot push: DEVAI_STORAGE_MODE is 'local'. "
+                "Set DEVAI_STORAGE_MODE=shared or hybrid and configure DEVAI_QDRANT_URL."
+            )
+
+        from .stores.qdrant_store import QdrantVectorStore
+        from .stores.factory import _parse_qdrant_url
+
+        host, port = _parse_qdrant_url(config.qdrant_url)
+        collection = config.collection_name or f"devai_{hashlib.sha256(repo.encode()).hexdigest()[:16]}"
+        target = QdrantVectorStore(
+            url=host,
+            port=port,
+            api_key=config.qdrant_api_key,
+            collection_name=collection,
+            dimension=self._embedding.dimension(),
+        )
+
+        # Read all local vectors for this repo+branch
+        points = self._vector_store.scroll_all(repo, branch)
+        total = len(points)
+        pushed = 0
+        errors = 0
+        batch_size = 1000
+
+        for i in range(0, total, batch_size):
+            batch = points[i : i + batch_size]
+            try:
+                target.upsert(batch)
+                pushed += len(batch)
+            except Exception as e:
+                logger.error("Push batch %d failed: %s", i // batch_size + 1, e)
+                errors += len(batch)
+
+        return {
+            "pushed": pushed,
+            "skipped": 0,
+            "errors": errors,
+            "total_local": total,
+            "repo": repo,
+            "branch": branch,
+            "collection": collection,
+        }
+
+    def _handle_pull_index(self, params: dict) -> dict:
+        """Pull vectors from shared Qdrant to local LanceDB for a repo+branch.
+
+        Creates a temporary QdrantVectorStore from env config, reads all vectors
+        via scroll_all(), and upserts into the local store in batches of 100.
+
+        Params:
+            repo (str): Required. Repository path or identifier.
+            branch (str): Optional. Git branch (default: "").
+
+        Returns:
+            {"pulled": N, "skipped": N, "errors": N}
+        """
+        repo = params.get("repo")
+        if not repo:
+            raise ValueError("pull_index requires 'repo' parameter")
+        branch = params.get("branch", "")
+
+        config = create_storage_config_from_env()
+        if config.mode == "local":
+            raise ValueError(
+                "Cannot pull: DEVAI_STORAGE_MODE is 'local'. "
+                "Set DEVAI_STORAGE_MODE=shared or hybrid and configure DEVAI_QDRANT_URL."
+            )
+
+        from .stores.qdrant_store import QdrantVectorStore
+        from .stores.factory import _parse_qdrant_url
+
+        host, port = _parse_qdrant_url(config.qdrant_url)
+        collection = config.collection_name or f"devai_{hashlib.sha256(repo.encode()).hexdigest()[:16]}"
+        source = QdrantVectorStore(
+            url=host,
+            port=port,
+            api_key=config.qdrant_api_key,
+            collection_name=collection,
+            dimension=self._embedding.dimension(),
+        )
+
+        # Read all shared vectors for this repo+branch
+        points = source.scroll_all(repo, branch)
+        total = len(points)
+        pulled = 0
+        errors = 0
+        batch_size = 1000
+
+        for i in range(0, total, batch_size):
+            batch = points[i : i + batch_size]
+            try:
+                self._vector_store.upsert(batch)
+                pulled += len(batch)
+            except Exception as e:
+                logger.error("Pull batch %d failed: %s", i // batch_size + 1, e)
+                errors += len(batch)
+
+        return {
+            "pulled": pulled,
+            "skipped": 0,
+            "errors": errors,
+            "total_remote": total,
+            "repo": repo,
+            "branch": branch,
+            "collection": collection,
+        }
+
+    def _handle_sync_index(self, params: dict) -> dict:
+        """Bidirectional sync between local LanceDB and shared Qdrant.
+
+        Compares content_hash values between stores. Points only in local
+        are pushed to shared. Points only in shared are pulled to local.
+        Conflicts (same ID, different content_hash) resolved by last-write-wins
+        using indexed_at timestamps (per AD-10).
+
+        Params:
+            repo (str): Required. Repository path or identifier.
+            branch (str): Optional. Git branch (default: "").
+
+        Returns:
+            {"pushed": N, "pulled": N, "conflicts": N, "resolution": "last-write-wins"}
+        """
+        repo = params.get("repo")
+        if not repo:
+            raise ValueError("sync_index requires 'repo' parameter")
+        branch = params.get("branch", "")
+
+        config = create_storage_config_from_env()
+        if config.mode == "local":
+            raise ValueError(
+                "Cannot sync: DEVAI_STORAGE_MODE is 'local'. "
+                "Set DEVAI_STORAGE_MODE=shared or hybrid and configure DEVAI_QDRANT_URL."
+            )
+
+        from .stores.qdrant_store import QdrantVectorStore
+        from .stores.factory import _parse_qdrant_url
+
+        host, port = _parse_qdrant_url(config.qdrant_url)
+        collection = config.collection_name or f"devai_{hashlib.sha256(repo.encode()).hexdigest()[:16]}"
+        shared_store = QdrantVectorStore(
+            url=host,
+            port=port,
+            api_key=config.qdrant_api_key,
+            collection_name=collection,
+            dimension=self._embedding.dimension(),
+        )
+
+        # Fetch all points from both stores
+        local_points = self._vector_store.scroll_all(repo, branch)
+        shared_points = shared_store.scroll_all(repo, branch)
+
+        # Build lookup maps by ID
+        local_by_id = {p.id: p for p in local_points}
+        shared_by_id = {p.id: p for p in shared_points}
+
+        local_ids = set(local_by_id.keys())
+        shared_ids = set(shared_by_id.keys())
+
+        # Sets
+        only_local = local_ids - shared_ids
+        only_shared = shared_ids - local_ids
+        both = local_ids & shared_ids
+
+        pushed = 0
+        pulled = 0
+        conflicts = 0
+        batch_size = 1000
+
+        # Push local-only points to shared
+        to_push = [local_by_id[pid] for pid in only_local]
+        for i in range(0, len(to_push), batch_size):
+            batch = to_push[i : i + batch_size]
+            try:
+                shared_store.upsert(batch)
+                pushed += len(batch)
+            except Exception as e:
+                logger.error("Sync push batch failed: %s", e)
+
+        # Pull shared-only points to local
+        to_pull = [shared_by_id[pid] for pid in only_shared]
+        for i in range(0, len(to_pull), batch_size):
+            batch = to_pull[i : i + batch_size]
+            try:
+                self._vector_store.upsert(batch)
+                pulled += len(batch)
+            except Exception as e:
+                logger.error("Sync pull batch failed: %s", e)
+
+        # Resolve conflicts: same ID, different content
+        for pid in both:
+            lp = local_by_id[pid]
+            sp = shared_by_id[pid]
+            local_hash = lp.metadata.get("content_hash", "")
+            shared_hash = sp.metadata.get("content_hash", "")
+            if local_hash == shared_hash:
+                continue  # already in sync
+
+            conflicts += 1
+            # Last-write-wins by indexed_at
+            local_ts = lp.metadata.get("indexed_at", "")
+            shared_ts = sp.metadata.get("indexed_at", "")
+
+            if shared_ts > local_ts:
+                # Shared wins — pull to local
+                try:
+                    self._vector_store.upsert([sp])
+                    pulled += 1
+                except Exception as e:
+                    logger.error("Sync conflict resolution (pull) failed: %s", e)
+            else:
+                # Local wins (also covers empty timestamps) — push to shared
+                try:
+                    shared_store.upsert([lp])
+                    pushed += 1
+                except Exception as e:
+                    logger.error("Sync conflict resolution (push) failed: %s", e)
+
+        return {
+            "pushed": pushed,
+            "pulled": pulled,
+            "conflicts": conflicts,
+            "resolution": "last-write-wins",
+            "repo": repo,
+            "branch": branch,
+            "collection": collection,
         }
 
     def _handle_health(self, params: dict) -> dict:
