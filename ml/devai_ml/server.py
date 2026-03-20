@@ -93,6 +93,13 @@ class MLService:
             len(self._parser_registry.supported_languages()),
         )
 
+    @staticmethod
+    def _repo_name(repo: str) -> str:
+        """Normalize repo identifier to short name (basename of path)."""
+        if not repo:
+            return repo
+        return Path(repo.rstrip("/")).name
+
     def handle_request(self, request: dict[str, Any]) -> dict[str, Any]:
         """Handle a JSON-RPC request."""
         method = request.get("method", "")
@@ -174,7 +181,7 @@ class MLService:
         # Build filter
         filters = {}
         if repo:
-            filters["repo"] = repo.rstrip("/")
+            filters["repo"] = self._repo_name(repo)
         if branch:
             filters["branch"] = branch
         if language:
@@ -734,9 +741,10 @@ class MLService:
         Returns:
             {"pushed": N, "skipped": N, "errors": N}
         """
-        repo = params.get("repo")
-        if not repo:
+        repo_raw = params.get("repo")
+        if not repo_raw:
             raise ValueError("push_index requires 'repo' parameter")
+        repo = self._repo_name(repo_raw)
         branch = params.get("branch", "")
 
         config = create_storage_config_from_env()
@@ -766,6 +774,12 @@ class MLService:
         errors = 0
         batch_size = 1000
 
+        # Count per branch for reporting
+        branch_counts: dict[str, int] = {}
+        for p in points:
+            b = p.metadata.get("branch", "")
+            branch_counts[b] = branch_counts.get(b, 0) + 1
+
         for i in range(0, total, batch_size):
             batch = points[i : i + batch_size]
             try:
@@ -777,11 +791,11 @@ class MLService:
 
         return {
             "pushed": pushed,
-            "skipped": 0,
             "errors": errors,
             "total_local": total,
             "repo": repo,
-            "branch": branch,
+            "branch": branch or "(all)",
+            "branches": branch_counts,
             "collection": collection,
         }
 
@@ -798,9 +812,10 @@ class MLService:
         Returns:
             {"pulled": N, "skipped": N, "errors": N}
         """
-        repo = params.get("repo")
-        if not repo:
+        repo_raw = params.get("repo")
+        if not repo_raw:
             raise ValueError("pull_index requires 'repo' parameter")
+        repo = self._repo_name(repo_raw)
         branch = params.get("branch", "")
 
         config = create_storage_config_from_env()
@@ -830,6 +845,12 @@ class MLService:
         errors = 0
         batch_size = 1000
 
+        # Count per branch for reporting
+        branch_counts: dict[str, int] = {}
+        for p in points:
+            b = p.metadata.get("branch", "")
+            branch_counts[b] = branch_counts.get(b, 0) + 1
+
         for i in range(0, total, batch_size):
             batch = points[i : i + batch_size]
             try:
@@ -841,11 +862,11 @@ class MLService:
 
         return {
             "pulled": pulled,
-            "skipped": 0,
             "errors": errors,
             "total_remote": total,
             "repo": repo,
-            "branch": branch,
+            "branch": branch or "(all)",
+            "branches": branch_counts,
             "collection": collection,
         }
 
@@ -864,9 +885,10 @@ class MLService:
         Returns:
             {"pushed": N, "pulled": N, "conflicts": N, "resolution": "last-write-wins"}
         """
-        repo = params.get("repo")
-        if not repo:
+        repo_raw = params.get("repo")
+        if not repo_raw:
             raise ValueError("sync_index requires 'repo' parameter")
+        repo = self._repo_name(repo_raw)
         branch = params.get("branch", "")
 
         config = create_storage_config_from_env()
@@ -959,13 +981,22 @@ class MLService:
                 except Exception as e:
                     logger.error("Sync conflict resolution (push) failed: %s", e)
 
+        # Collect branch stats from all points involved
+        branch_counts: dict[str, int] = {}
+        for p in local_points:
+            b = p.metadata.get("branch", "")
+            branch_counts[b] = branch_counts.get(b, 0) + 1
+
         return {
             "pushed": pushed,
             "pulled": pulled,
             "conflicts": conflicts,
             "resolution": "last-write-wins",
+            "total_local": len(local_points),
+            "total_remote": len(shared_points),
             "repo": repo,
-            "branch": branch,
+            "branch": branch or "(all)",
+            "branches": branch_counts,
             "collection": collection,
         }
 

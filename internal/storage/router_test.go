@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/snaven10/devai/internal/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,7 +117,7 @@ func TestNewFromEnv_UnknownMode(t *testing.T) {
 
 func TestNewFromEnv_DefaultLocalPath(t *testing.T) {
 	clearStorageEnv(t)
-	// Don't set DEVAI_LOCAL_DB_PATH — should default to ~/.local/share/devai/state
+	// Don't set DEVAI_LOCAL_DB_PATH — should default to ~/.local/share/devai/state/vectors
 
 	r, err := NewFromEnv()
 	if err != nil {
@@ -123,7 +125,7 @@ func TestNewFromEnv_DefaultLocalPath(t *testing.T) {
 	}
 
 	home, _ := os.UserHomeDir()
-	expected := home + "/.local/share/devai/state"
+	expected := home + "/.local/share/devai/state/vectors"
 	if r.LocalPath() != expected {
 		t.Errorf("expected default path %q, got %q", expected, r.LocalPath())
 	}
@@ -284,6 +286,96 @@ func TestValidate_HybridComplete_OK(t *testing.T) {
 	r := New(Config{Mode: ModeHybrid, LocalPath: "/tmp/db", SharedURL: "qdrant:6334"})
 	if err := r.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NewFromConfigWithEnvOverride
+// ---------------------------------------------------------------------------
+
+func TestNewFromConfigWithEnvOverride_ConfigValuesUsed(t *testing.T) {
+	clearStorageEnv(t)
+
+	cfg := config.ProjectConfig{}
+	cfg.Storage.Mode = "shared"
+	cfg.Storage.QdrantURL = "qdrant.config:6334"
+	cfg.Storage.QdrantKey = "config-key"
+	cfg.Storage.LocalDBPath = "/tmp/config-path"
+
+	r, err := NewFromConfigWithEnvOverride(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Mode() != ModeShared {
+		t.Errorf("mode: expected %q, got %q", ModeShared, r.Mode())
+	}
+	if r.SharedURL() != "qdrant.config:6334" {
+		t.Errorf("shared URL: expected %q, got %q", "qdrant.config:6334", r.SharedURL())
+	}
+}
+
+func TestNewFromConfigWithEnvOverride_EnvOverridesConfig(t *testing.T) {
+	clearStorageEnv(t)
+	t.Setenv("DEVAI_STORAGE_MODE", "shared")
+	t.Setenv("DEVAI_QDRANT_URL", "qdrant.env:6334")
+	t.Setenv("DEVAI_QDRANT_API_KEY", "env-key")
+
+	cfg := config.ProjectConfig{}
+	cfg.Storage.Mode = "local"
+	cfg.Storage.QdrantURL = "qdrant.config:6334"
+	cfg.Storage.QdrantKey = "config-key"
+	cfg.Storage.LocalDBPath = "/tmp/config-path"
+
+	r, err := NewFromConfigWithEnvOverride(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Mode() != ModeShared {
+		t.Errorf("mode: expected %q (from env), got %q", ModeShared, r.Mode())
+	}
+	if r.SharedURL() != "qdrant.env:6334" {
+		t.Errorf("shared URL: expected %q (from env), got %q", "qdrant.env:6334", r.SharedURL())
+	}
+}
+
+func TestNewFromConfigWithEnvOverride_DefaultsWhenBothEmpty(t *testing.T) {
+	clearStorageEnv(t)
+
+	cfg := config.ProjectConfig{} // all zero values
+
+	r, err := NewFromConfigWithEnvOverride(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Mode() != ModeLocal {
+		t.Errorf("mode: expected %q (default), got %q", ModeLocal, r.Mode())
+	}
+
+	home, _ := os.UserHomeDir()
+	expectedPath := home + "/.local/share/devai/state/vectors"
+	if r.LocalPath() != expectedPath {
+		t.Errorf("local path: expected %q (default), got %q", expectedPath, r.LocalPath())
+	}
+}
+
+func TestNewFromConfigWithEnvOverride_MixedSources(t *testing.T) {
+	clearStorageEnv(t)
+	// Mode from env, URL from config
+	t.Setenv("DEVAI_STORAGE_MODE", "shared")
+	t.Setenv("DEVAI_QDRANT_API_KEY", "env-key")
+
+	cfg := config.ProjectConfig{}
+	cfg.Storage.QdrantURL = "qdrant.config:6334"
+
+	r, err := NewFromConfigWithEnvOverride(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Mode() != ModeShared {
+		t.Errorf("mode: expected %q (from env), got %q", ModeShared, r.Mode())
+	}
+	if r.SharedURL() != "qdrant.config:6334" {
+		t.Errorf("shared URL: expected %q (from config), got %q", "qdrant.config:6334", r.SharedURL())
 	}
 }
 

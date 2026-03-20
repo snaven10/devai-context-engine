@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/snaven10/devai/internal/config"
 )
 
 // Mode determines where data is stored.
@@ -96,7 +98,7 @@ func NewFromEnv() (*Router, error) {
 		if err != nil {
 			return nil, fmt.Errorf("cannot determine home directory: %w", err)
 		}
-		localPath = home + "/.local/share/devai/state"
+		localPath = home + "/.local/share/devai/state/vectors"
 	}
 
 	cfg := Config{
@@ -126,6 +128,58 @@ func (r *Router) EnvVars() []string {
 // Mode returns the current storage mode.
 func (r *Router) Mode() Mode {
 	return r.config.Mode
+}
+
+// NewFromConfigWithEnvOverride creates a Router from a ProjectConfig, allowing
+// environment variables to override config file values. Priority:
+// env var (if non-empty) > config file value > default.
+func NewFromConfigWithEnvOverride(projectCfg config.ProjectConfig) (*Router, error) {
+	// Start with config file values.
+	mode := projectCfg.Storage.Mode
+	qdrantURL := projectCfg.Storage.QdrantURL
+	qdrantKey := projectCfg.Storage.QdrantKey
+	localPath := projectCfg.Storage.LocalDBPath
+
+	// Env vars override if non-empty.
+	if v := os.Getenv("DEVAI_STORAGE_MODE"); v != "" {
+		mode = v
+	}
+	if v := os.Getenv("DEVAI_QDRANT_URL"); v != "" {
+		qdrantURL = v
+	}
+	if v := os.Getenv("DEVAI_QDRANT_API_KEY"); v != "" {
+		qdrantKey = v
+	}
+	if v := os.Getenv("DEVAI_LOCAL_DB_PATH"); v != "" {
+		localPath = v
+	}
+
+	// Defaults if both config and env are empty.
+	resolvedMode := Mode(strings.ToLower(mode))
+	if resolvedMode == "" {
+		resolvedMode = ModeLocal
+	}
+
+	if localPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("cannot determine home directory: %w", err)
+		}
+		localPath = home + "/.local/share/devai/state/vectors"
+	}
+
+	cfg := Config{
+		Mode:      resolvedMode,
+		LocalPath: localPath,
+		SharedURL: qdrantURL,
+		APIToken:  qdrantKey,
+	}
+
+	r := New(cfg)
+	if err := r.Validate(); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // EnvVarsFromEnv reads storage-related environment variables and returns them

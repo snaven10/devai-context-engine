@@ -55,6 +55,11 @@ class IndexPipeline:
         self.graph_store = graph_store
         self.index_store = index_store
 
+    @staticmethod
+    def _repo_name(repo_path: str) -> str:
+        """Extract short repo name from full path (basename)."""
+        return Path(repo_path).name
+
     def index_repo(
         self,
         repo_path: str,
@@ -64,11 +69,12 @@ class IndexPipeline:
         """Index a repository, optionally incrementally."""
         start_time = time.monotonic()
 
+        repo_name = self._repo_name(repo_path)
         git = GitStateDetector(repo_path)
         state = git.get_state()
         branch = branch or state.branch
 
-        last = self.index_store.get_last_indexed(repo_path, branch)
+        last = self.index_store.get_last_indexed(repo_name, branch)
 
         # Determine what to index
         full_reindex = False
@@ -109,7 +115,7 @@ class IndexPipeline:
 
         for change in changes:
             try:
-                result = self._process_change(change, repo_path, branch, state.current_commit, git)
+                result = self._process_change(change, repo_name, branch, state.current_commit, git)
                 if result:
                     files_processed += 1
                     total_chunks += result["chunks"]
@@ -123,7 +129,7 @@ class IndexPipeline:
 
         # Update index state
         self.index_store.save(IndexRecord(
-            repo_path=repo_path,
+            repo_path=repo_name,
             branch=branch,
             last_commit=state.current_commit,
             model_name=self.embedding.model_name(),
@@ -140,7 +146,7 @@ class IndexPipeline:
         )
 
         return IndexResult(
-            repo_path=repo_path,
+            repo_path=repo_name,
             branch=branch,
             commit=state.current_commit,
             files_processed=files_processed,
@@ -155,7 +161,7 @@ class IndexPipeline:
     def _process_change(
         self,
         change: FileChange,
-        repo_path: str,
+        repo_name: str,
         branch: str,
         commit: str,
         git: GitStateDetector,
@@ -163,26 +169,26 @@ class IndexPipeline:
         """Process a single file change. Returns stats dict or None if skipped."""
 
         if change.status == FileStatus.DELETED:
-            self.vector_store.delete_by_file(repo_path, branch, change.path)
-            self.graph_store.remove_file(repo_path, branch, change.path)
-            self.index_store.remove_file(repo_path, branch, change.path)
+            self.vector_store.delete_by_file(repo_name, branch, change.path)
+            self.graph_store.remove_file(repo_name, branch, change.path)
+            self.index_store.remove_file(repo_name, branch, change.path)
             logger.debug("Deleted index for %s", change.path)
             return {"chunks": 0, "symbols": 0, "edges": 0}
 
         if change.status == FileStatus.RENAMED:
-            self.vector_store.rename_file(repo_path, branch, change.old_path, change.path)
-            self.graph_store.rename_file(repo_path, branch, change.old_path, change.path)
-            self.index_store.rename_file(repo_path, branch, change.old_path, change.path)
+            self.vector_store.rename_file(repo_name, branch, change.old_path, change.path)
+            self.graph_store.rename_file(repo_name, branch, change.old_path, change.path)
+            self.index_store.rename_file(repo_name, branch, change.old_path, change.path)
             # Also re-parse in case content changed with the rename
             # Fall through to parse_and_store
 
         # For ADDED, MODIFIED, and RENAMED (after metadata update)
-        return self._parse_and_store(change.path, repo_path, branch, commit, git)
+        return self._parse_and_store(change.path, repo_name, branch, commit, git)
 
     def _parse_and_store(
         self,
         file_path: str,
-        repo_path: str,
+        repo_name: str,
         branch: str,
         commit: str,
         git: GitStateDetector,
@@ -201,14 +207,14 @@ class IndexPipeline:
 
         # Check if content actually changed (hash comparison)
         content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
-        existing_hash = self.index_store.get_file_hash(repo_path, branch, file_path)
+        existing_hash = self.index_store.get_file_hash(repo_name, branch, file_path)
         if existing_hash == content_hash:
             logger.debug("Content unchanged for %s, skipping", file_path)
             return None
 
         # Delete old vectors for this file (before re-indexing)
-        self.vector_store.delete_by_file(repo_path, branch, file_path)
-        self.graph_store.remove_file(repo_path, branch, file_path)
+        self.vector_store.delete_by_file(repo_name, branch, file_path)
+        self.graph_store.remove_file(repo_name, branch, file_path)
 
         # Parse
         parse_result = parser.parse_source(content, file_path)
@@ -224,12 +230,12 @@ class IndexPipeline:
             # Store vectors
             points = []
             for chunk, vector in zip(chunks, vectors):
-                point_id = deterministic_id(repo_path, branch, file_path, chunk.start_line)
+                point_id = deterministic_id(repo_name, branch, file_path, chunk.start_line)
                 points.append(VectorPoint(
                     id=point_id,
                     vector=vector,
                     metadata={
-                        "repo": repo_path,
+                        "repo": repo_name,
                         "branch": branch,
                         "commit": commit,
                         "file": file_path,
@@ -256,7 +262,7 @@ class IndexPipeline:
                     source_file=file_path,
                     target_file=None,  # resolved later
                     line=e.line,
-                    repo=repo_path,
+                    repo=repo_name,
                     branch=branch,
                 )
                 for e in parse_result.edges
@@ -264,7 +270,7 @@ class IndexPipeline:
             self.graph_store.add_edges(stored_edges)
 
         # Update file state
-        self.index_store.save_file(repo_path, branch, FileRecord(
+        self.index_store.save_file(repo_name, branch, FileRecord(
             file_path=file_path,
             content_hash=content_hash,
             language=parse_result.language,

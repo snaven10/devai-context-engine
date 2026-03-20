@@ -254,8 +254,13 @@ class LanceDBVectorStore:
         return self._table.count_rows()
 
     def scroll_all(self, repo: str, branch: str) -> list[VectorPoint]:
-        """Iterate all points for a repo+branch. Used by push/pull/sync."""
-        where = f"repo = '{repo}' AND branch = '{branch}'"
+        """Iterate all points for a repo+branch. Used by push/pull/sync.
+
+        If branch is empty, returns all points for the repo across all branches.
+        """
+        where = f"repo = '{repo}'"
+        if branch:
+            where += f" AND branch = '{branch}'"
         try:
             table = self._table.search().where(where).to_arrow()
         except Exception:

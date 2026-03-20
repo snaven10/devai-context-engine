@@ -9,6 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/mark3labs/mcp-go v0.45.0
 	github.com/spf13/cobra v1.8.1
+	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.29.1
 )
 
@@ -48,7 +49,6 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/sys v0.38.0 // indirect
 	golang.org/x/text v0.3.8 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.41.0 // indirect
 	modernc.org/mathutil v1.6.0 // indirect

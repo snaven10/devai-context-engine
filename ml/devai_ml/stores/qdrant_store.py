@@ -429,6 +429,8 @@ class QdrantVectorStore:
         Uses Qdrant's scroll API with pagination to avoid loading
         all points into memory at once. Returns VectorPoint objects
         with original LanceDB string IDs restored from _lance_id.
+
+        If branch is empty, returns all points for the repo across all branches.
         """
         try:
             if not self._client.collection_exists(self._collection_name):
@@ -437,7 +439,10 @@ class QdrantVectorStore:
             logger.error("scroll_all collection check failed: %s", e)
             return []
 
-        scroll_filter = self._build_filter({"repo": repo, "branch": branch})
+        filter_conds: dict[str, Any] = {"repo": repo}
+        if branch:
+            filter_conds["branch"] = branch
+        scroll_filter = self._build_filter(filter_conds)
         all_points: list[VectorPoint] = []
         offset = None
 

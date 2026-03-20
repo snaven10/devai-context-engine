@@ -64,6 +64,8 @@ embeddings:
 
 storage:
   mode: local
+  # qdrant_url: localhost:6334
+  # qdrant_api_key: ""
 
 indexing:
   exclude:
