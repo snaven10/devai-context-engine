@@ -300,7 +300,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Failed to install Python dependencies." }
 
     # Install devai_ml wheel from release
-    $wheelAsset = $releaseInfo.assets | Where-Object { $_.name -like "devai_ml-*.whl" } | Select-Object -First 1
+    $wheelAsset = $release.assets | Where-Object { $_.name -like "devai_ml-*.whl" } | Select-Object -First 1
     if ($wheelAsset) {
         $wheelPath = Join-Path $tmpDir $wheelAsset.name
         Write-Info "Installing devai_ml wheel..."
