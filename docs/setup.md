@@ -302,6 +302,97 @@ docker compose up -d qdrant
 
 Dashboard: http://localhost:6333/dashboard
 
+---
+
+## MCP Integration
+
+DevAI runs as an [MCP](https://modelcontextprotocol.io/) server over stdio, exposing 14 tools to any compatible AI client.
+
+### Automatic Setup (recommended)
+
+```bash
+devai server configure --all
+```
+
+Run this from your project root (where `.devai/config.yaml` lives). It:
+
+1. Detects the `devai` binary path and project state directory
+2. Writes MCP server config to Claude Code (`~/.claude/settings.json`) and Cursor (`~/.cursor/mcp.json`)
+3. Sets environment variables based on your project's storage mode
+4. Generates `.devai/AGENT.md` with tool usage instructions for your AI agent
+
+**Flags:**
+
+```bash
+devai server configure --claude     # Claude Code only
+devai server configure --cursor     # Cursor only
+devai server configure --all        # All clients (default)
+devai server configure --show       # Preview without writing
+devai server configure --remove     # Remove DevAI from configs
+```
+
+### Manual Setup
+
+#### Claude Code
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "devai": {
+      "type": "stdio",
+      "command": "/path/to/devai",
+      "args": ["server", "mcp"],
+      "env": {
+        "DEVAI_STATE_DIR": "/path/to/repo/.devai/state"
+      }
+    }
+  }
+}
+```
+
+#### Cursor
+
+Add to `~/.cursor/mcp.json` (same structure):
+
+```json
+{
+  "mcpServers": {
+    "devai": {
+      "type": "stdio",
+      "command": "/path/to/devai",
+      "args": ["server", "mcp"],
+      "env": {
+        "DEVAI_STATE_DIR": "/path/to/repo/.devai/state"
+      }
+    }
+  }
+}
+```
+
+For shared/hybrid storage, add these env vars:
+
+```json
+"env": {
+  "DEVAI_STATE_DIR": "/path/to/repo/.devai/state",
+  "DEVAI_STORAGE_MODE": "hybrid",
+  "DEVAI_QDRANT_URL": "localhost:6334"
+}
+```
+
+### Agent Instructions
+
+`devai server configure` generates `.devai/AGENT.md` in your project root. This file teaches AI agents when and how to use DevAI tools (search before grep, build_context for complex questions, etc.). Reference it from your agent's system prompt if needed.
+
+### After Configuring
+
+Restart your AI client (Claude Code, Cursor, etc.) for MCP changes to take effect.
+
+See [docs/mcp-tools.md](mcp-tools.md) for the full tool reference.
+
+---
+
 ### Migrating Existing Local Indexes to Shared
 
 If you already have repos indexed locally and switch to hybrid/shared mode:

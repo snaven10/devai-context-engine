@@ -7,7 +7,82 @@
 
 ---
 
-All 17 tools are registered in `internal/mcp/server.go` and exposed via the MCP stdio protocol. Start with `devai server mcp`.
+14 MCP tools are registered in `internal/mcp/server.go` and exposed via the MCP stdio protocol. Start with `devai server mcp`.
+
+> **Note:** `push_index`, `pull_index`, and `sync_index` are CLI-only commands, not MCP tools.
+
+---
+
+## Quick Setup
+
+### Automatic (recommended)
+
+```bash
+devai server configure --all
+```
+
+This auto-detects your project config and writes MCP server entries to all supported clients (Claude Code, Cursor). It also generates `.devai/AGENT.md` with tool usage instructions for your AI agent.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--claude` | Configure for Claude Code only |
+| `--cursor` | Configure for Cursor only |
+| `--all` | Configure for all detected clients (default) |
+| `--show` | Preview config without writing |
+| `--remove` | Remove DevAI from MCP configs |
+
+**Environment variables set automatically:**
+
+| Variable | When |
+|----------|------|
+| `DEVAI_STATE_DIR` | Always — points to `.devai/state/` |
+| `DEVAI_STORAGE_MODE` | When project uses `shared` or `hybrid` mode |
+| `DEVAI_QDRANT_URL` | When Qdrant URL is configured |
+| `DEVAI_QDRANT_API_KEY` | When Qdrant API key is configured |
+
+### Manual
+
+#### Claude Code
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "devai": {
+      "type": "stdio",
+      "command": "/path/to/devai",
+      "args": ["server", "mcp"],
+      "env": {
+        "DEVAI_STATE_DIR": "/path/to/repo/.devai/state"
+      }
+    }
+  }
+}
+```
+
+#### Cursor
+
+Add to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "devai": {
+      "type": "stdio",
+      "command": "/path/to/devai",
+      "args": ["server", "mcp"],
+      "env": {
+        "DEVAI_STATE_DIR": "/path/to/repo/.devai/state"
+      }
+    }
+  }
+}
+```
+
+Restart your AI client after configuring.
 
 ---
 
@@ -153,28 +228,30 @@ Get memory system statistics: total count, breakdown by type and project.
 
 ---
 
-## Index Synchronization
+## Index Synchronization (CLI only)
+
+These commands are available via the CLI only, not as MCP tools.
 
 ### push_index
 
 Push local vectors to shared Qdrant store. Requires shared or hybrid storage mode.
 
-**Parameters:**
-- **`repo`** (required) — repository name
-- `branch` — branch filter (default: all branches)
+```bash
+devai push-index --repo my-repo [--branch main]
+```
 
 ### pull_index
 
 Pull vectors from shared Qdrant store to local. Requires shared or hybrid storage mode.
 
-**Parameters:**
-- **`repo`** (required) — repository name
-- `branch` — branch filter (default: all branches)
+```bash
+devai pull-index --repo my-repo [--branch main]
+```
 
 ### sync_index
 
 Bidirectional sync between local and shared stores. Additive only (no deletes). Uses `indexed_at` timestamps for conflict resolution.
 
-**Parameters:**
-- **`repo`** (required) — repository name
-- `branch` — branch filter (default: all branches)
+```bash
+devai sync-index --repo my-repo [--branch main]
+```

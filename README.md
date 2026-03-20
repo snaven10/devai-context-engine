@@ -109,10 +109,13 @@ devai init /path/to/your/repo --name "My Project"
 cd /path/to/your/repo
 devai index
 
-# 4. Search
+# 4. Configure as MCP server (for Claude Code, Cursor, etc.)
+devai server configure --all
+
+# 5. Search
 devai search "authentication middleware" --limit 10
 
-# 5. Start MCP server for your AI assistant
+# 6. Start MCP server for your AI assistant
 devai server mcp
 ```
 
@@ -254,51 +257,46 @@ When running as an MCP server (`devai server mcp`), DevAI exposes 14 tools:
 
 ## Agent Setup
 
-### Claude Code
+### Automatic (recommended)
 
-Add to your project's `.mcp.json` or Claude Code settings:
+```bash
+devai server configure --all
+```
+
+This writes MCP server config to Claude Code and Cursor, sets env vars from your project config, and generates `.devai/AGENT.md` with tool usage instructions.
+
+**Flags:** `--claude`, `--cursor`, `--all` (default), `--show` (preview), `--remove`
+
+### Manual
+
+#### Claude Code
+
+Add to `~/.claude/settings.json`:
 
 ```json
 {
   "mcpServers": {
     "devai": {
+      "type": "stdio",
       "command": "/path/to/devai",
       "args": ["server", "mcp"],
       "env": {
-        "DEVAI_STATE_DIR": "/path/to/repo/.devai/state/"
+        "DEVAI_STATE_DIR": "/path/to/repo/.devai/state"
       }
     }
   }
 }
 ```
 
-> **Tip**: Set `DEVAI_STATE_DIR` to the `.devai/state/` directory inside the repo you want to search.
+#### Cursor / Windsurf / Any MCP Client
 
-### Cursor / Windsurf / Any MCP Client
+Add to `~/.cursor/mcp.json` (same structure). DevAI communicates over **stdio** using the standard MCP protocol — any compliant client can connect.
 
-DevAI communicates over **stdio** using the standard MCP protocol. Any client that supports MCP can connect:
-
-```json
-{
-  "mcpServers": {
-    "devai": {
-      "command": "/path/to/devai",
-      "args": ["server", "mcp"],
-      "env": {
-        "DEVAI_STATE_DIR": "/path/to/repo/.devai/state/"
-      }
-    }
-  }
-}
-```
-
-The config is identical — DevAI is agent-agnostic.
-
-### VS Code (Continue / Cline)
+#### VS Code (Continue / Cline)
 
 Add to your MCP settings in the extension configuration. Same command, same args.
 
-> **Note**: Make sure the `devai` binary is in your PATH or use an absolute path.
+> **Note**: Make sure the `devai` binary is in your PATH or use an absolute path. Restart your AI client after configuring.
 
 ---
 
@@ -334,6 +332,7 @@ devai tui                   Open interactive terminal UI
 devai server start          Start the Python ML service
 devai server status         Check ML service health
 devai server mcp            Start MCP server (stdio)
+devai server configure      Configure DevAI as MCP server in AI clients
 devai status                Show ML service health and model info
 devai index-status          Show per-branch index statistics
 devai hooks install         Install git post-commit hook
