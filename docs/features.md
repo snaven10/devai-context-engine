@@ -2,6 +2,9 @@
 
 > Back to [DOCS](../DOCS.md) | [README](../README.md)
 
+> **Warning**
+> DevAI is in **alpha**. All features listed below are implemented and functional in local development, but have not been battle-tested in production environments. Edge cases and bugs are expected.
+
 ---
 
 ## 1. Semantic Code Search
@@ -245,3 +248,17 @@ devai sync-index --repo my-repo [--branch main]
 ```
 
 Additive merge — no deletes. Conflict resolution: last-write-wins based on `indexed_at` timestamp.
+
+---
+
+## Storage Mode Quick Reference
+
+| Mode | Vector Backend | Offline? | Team Sharing? | Configuration |
+|------|---------------|----------|---------------|---------------|
+| **Local** (default) | LanceDB on disk | Yes | No | `DEVAI_STORAGE_MODE=local` |
+| **Shared** | Qdrant (remote) | No | Yes | `DEVAI_STORAGE_MODE=shared` + `DEVAI_QDRANT_URL` |
+| **Hybrid** | LanceDB + Qdrant | Degrades gracefully | Yes | `DEVAI_STORAGE_MODE=hybrid` + `DEVAI_QDRANT_URL` |
+
+> **Note:** Memory (decisions, patterns, bugs) is always stored in local SQLite regardless of storage mode. Memory sharing via Qdrant is not yet implemented.
+
+See [Setup & Configuration](setup.md#storage-modes) for detailed configuration instructions.

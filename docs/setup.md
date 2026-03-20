@@ -2,16 +2,95 @@
 
 > Back to [DOCS](../DOCS.md) | [README](../README.md)
 
+> **Warning**
+> DevAI is in **alpha**. Install scripts depend on GitHub releases that have not been published yet. Until the first release is cut, use the "From Source" method below.
+
+---
+
+## Prerequisites
+
+The install script handles everything automatically. You do NOT need Go or Python pre-installed.
+
+**What the install script provides:**
+- Precompiled Go binary (from GitHub releases)
+- Portable Python 3.12 (from [python-build-standalone](https://github.com/astral-sh/python-build-standalone))
+- Virtual environment with all Python dependencies
+- PATH configuration
+
+**What you need:**
+- `curl` or `wget` (Linux/macOS) — pre-installed on most systems
+- `tar` — pre-installed on most systems
+- Internet connection (for initial install and first model download)
+- ~2 GB disk space (binary + Python + venv with PyTorch CPU-only)
+
 ---
 
 ## Installation
 
-### From Source (recommended)
+### One-Line Install (Linux / macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.sh | bash
+```
+
+**Flags:**
+
+```bash
+# Install with GPU (CUDA) PyTorch support
+curl -fsSL https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.sh | bash -s -- --gpu
+
+# Install a specific version
+curl -fsSL https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.sh | bash -s -- --version v0.1.0
+
+# Uninstall
+curl -fsSL https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.sh | bash -s -- --uninstall
+```
+
+**What it does:**
+1. Detects OS (Linux/macOS) and architecture (amd64/arm64)
+2. Downloads the DevAI binary from GitHub releases
+3. Downloads portable Python 3.12 from python-build-standalone
+4. Creates a venv and installs Python dependencies
+5. Adds `~/.local/share/devai/bin` to your PATH
+
+**Install location:** `~/.local/share/devai/`
+
+```
+~/.local/share/devai/
+  bin/devai          # Go binary
+  python/            # Portable Python 3.12
+  python/venv/       # Virtual environment with deps
+```
+
+### One-Line Install (Windows / PowerShell)
+
+> **Note:** Windows support exists but is untested. Report issues if you try it.
+
+```powershell
+irm https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.ps1 | iex
+```
+
+**Flags:**
+
+```powershell
+# With GPU support
+.\install.ps1 -Gpu
+
+# Specific version
+.\install.ps1 -Version v0.1.0
+
+# Uninstall
+.\install.ps1 -Uninstall
+```
+
+**Install location:** `%LOCALAPPDATA%\devai\`
+
+### From Source (for developers)
 
 > **Prerequisites:** Go 1.24+, Python 3.11+, Make
 
 ```bash
-git clone <repo-url> devai
+git clone https://github.com/snaven10/devai-context-engine.git devai
 cd devai
 make build
 ```
@@ -33,10 +112,13 @@ make docker              # Build image as devai:latest
 docker-compose up -d     # Start DevAI + Qdrant
 ```
 
+> **Note:** The docker-compose.yml currently only defines Qdrant. There is no full-stack compose with the DevAI service yet.
+
 ### Binary Location
 
 - After `make build`: `./devai` in project root
 - After `make install`: `$GOPATH/bin/devai`
+- After install script: `~/.local/share/devai/bin/devai`
 
 ### State Location
 
@@ -57,11 +139,11 @@ project:
   path: /full/path/to/repo
 
 embeddings:
-  provider: local
-  model: minilm-l6
+  provider: local       # local | openai | voyage | custom
+  model: minilm-l6      # model name (provider-specific)
 
 storage:
-  mode: local
+  mode: local            # local | shared | hybrid
 
 indexing:
   exclude:
@@ -75,6 +157,17 @@ indexing:
     - "*.lock"
 ```
 
+**All config options:**
+
+| Section | Key | Values | Default | Description |
+|---------|-----|--------|---------|-------------|
+| `project` | `name` | string | directory name | Project display name |
+| `project` | `path` | string | cwd | Absolute path to repository root |
+| `embeddings` | `provider` | `local`, `openai`, `voyage`, `custom` | `local` | Embedding backend |
+| `embeddings` | `model` | string | `minilm-l6` | Model name for the provider |
+| `storage` | `mode` | `local`, `shared`, `hybrid` | `local` | Where vectors are stored |
+| `indexing` | `exclude` | glob list | see above | Patterns to skip during indexing |
+
 ---
 
 ## Environment Variables
@@ -86,9 +179,16 @@ indexing:
 | `DEVAI_ML_MODEL` | Embedding model name | `minilm-l6` |
 | `DEVAI_STORAGE_MODE` | `local`, `shared`, or `hybrid` | `local` |
 | `DEVAI_QDRANT_URL` | Qdrant gRPC endpoint (host:port) | `localhost:6334` |
-| `DEVAI_QDRANT_API_KEY` | Qdrant API key (optional) | — |
+| `DEVAI_QDRANT_API_KEY` | Qdrant API key (optional) | -- |
 | `DEVAI_LOCAL_DB_PATH` | LanceDB directory path | `{state_dir}/vectors` |
-| `DEVAI_API_TOKEN` | Authentication token for shared mode | — |
+| `DEVAI_API_TOKEN` | Authentication token for shared mode | -- |
+
+**API provider variables (only needed if using non-local embeddings):**
+
+| Variable | Provider |
+|----------|----------|
+| `OPENAI_API_KEY` | OpenAI embeddings |
+| `VOYAGE_API_KEY` | Voyage AI embeddings |
 
 ---
 
@@ -102,6 +202,13 @@ Vectors stored in LanceDB on disk. Zero configuration, works offline.
 
 - Best for: single machine, personal use
 - No network dependency
+- Data lives in `.devai/state/vectors/`
+
+```yaml
+# .devai/config.yaml
+storage:
+  mode: local
+```
 
 ### Shared
 
@@ -109,6 +216,17 @@ Vectors stored in Qdrant (remote). Enables team-wide code search.
 
 - Best for: teams sharing a codebase index
 - Requires: Qdrant instance running
+- **Note:** Only vector embeddings are shared. Memories (SQLite) remain local-only.
+
+```yaml
+storage:
+  mode: shared
+```
+
+```bash
+export DEVAI_STORAGE_MODE=shared
+export DEVAI_QDRANT_URL=localhost:6334
+```
 
 ### Hybrid
 
@@ -116,21 +234,38 @@ Write-through to both LanceDB (local) and Qdrant (shared). Searches local first,
 
 - Best for: team use with offline resilience
 - Graceful degradation: if Qdrant is unreachable, continues with local
-- Retry queue: failed shared writes are queued and replayed on reconnect
+- Retry queue: failed shared writes are queued and replayed on reconnect (max 10,000 ops)
+- Health monitoring: background thread checks Qdrant every 60 seconds
 
-### Configuration
-
-**Environment variables:**
+```yaml
+storage:
+  mode: hybrid
+```
 
 ```bash
-export DEVAI_STORAGE_MODE=hybrid          # local | shared | hybrid
-export DEVAI_QDRANT_URL=localhost:6334    # Qdrant gRPC endpoint
+export DEVAI_STORAGE_MODE=hybrid
+export DEVAI_QDRANT_URL=localhost:6334
 export DEVAI_QDRANT_API_KEY=your-key      # optional
 ```
 
-**Claude Code settings.json** (recommended for persistent config):
+### Push/Pull/Sync Workflow
 
-In `~/.claude/settings.json`, add to your MCP server config:
+Move indexes between local and shared storage:
+
+```bash
+# Push local vectors to Qdrant
+devai push-index --repo my-repo [--branch main]
+
+# Pull Qdrant vectors to local
+devai pull-index --repo my-repo [--branch main]
+
+# Bidirectional sync (additive, no deletes, last-write-wins)
+devai sync-index --repo my-repo [--branch main]
+```
+
+### Claude Code MCP Configuration
+
+In `~/.claude/settings.json` or project-level `.claude/settings.json`:
 
 ```json
 {
@@ -147,8 +282,6 @@ In `~/.claude/settings.json`, add to your MCP server config:
   }
 }
 ```
-
-Or in project-level `.claude/settings.json` for per-project config.
 
 ### Running Qdrant
 
@@ -176,7 +309,7 @@ If you already have repos indexed locally and switch to hybrid/shared mode:
 1. Your local indexes remain intact
 2. Use `devai push-index --repo <name>` to push local vectors to Qdrant
 3. In hybrid mode, searches work immediately (read-local-first)
-4. Push is idempotent — safe to run multiple times
+4. Push is idempotent -- safe to run multiple times
 
 ---
 
@@ -185,15 +318,13 @@ If you already have repos indexed locally and switch to hybrid/shared mode:
 | Provider | Config Value | Model Default | Dimension |
 |----------|-------------|---------------|-----------|
 | Sentence Transformers | `local` | `minilm-l6` | 384 |
-| OpenAI | `openai` | `small` | — |
-| Voyage AI | `voyage` | `code-3` | — |
-| Custom HTTP | `custom` | — | configurable |
+| OpenAI | `openai` | `small` | -- |
+| Voyage AI | `voyage` | `code-3` | -- |
+| Custom HTTP | `custom` | -- | configurable |
 
-**Local provider** runs entirely offline — no API keys, no network dependency. Models are downloaded once and cached.
+**Local provider** runs entirely offline -- no API keys, no network dependency. Models are downloaded once on first run and cached in `~/.cache/torch/sentence_transformers/`.
 
-**API providers** require environment variables:
-- OpenAI: `OPENAI_API_KEY`
-- Voyage: `VOYAGE_API_KEY`
+> **Note:** OpenAI and Voyage providers exist in code but have minimal integration testing. Use at your own risk.
 
 ---
 
@@ -217,7 +348,7 @@ If you already have repos indexed locally and switch to hybrid/shared mode:
 |---------|---------|---------|
 | `sentence-transformers` | >= 2.2.0 | Local embeddings |
 | `tree-sitter` | >= 0.23.0 | AST parsing |
-| `tree-sitter-{lang}` | — | Language grammars (17 packages) |
+| `tree-sitter-{lang}` | -- | Language grammars (17 packages) |
 | `lancedb` | >= 0.4.0 | Embedded vector store |
 | `qdrant-client` | >= 1.7.0 | Optional shared vector store |
 | `tiktoken` | >= 0.5.0 | Token counting |
@@ -266,13 +397,13 @@ make help            Show available targets
 
 ### Dockerfile (Multi-stage)
 
-**Stage 1 — Go Builder:**
+**Stage 1 -- Go Builder:**
 ```dockerfile
 FROM golang:1.22-alpine AS go-builder
 # Builds static binary: CGO_ENABLED=0
 ```
 
-**Stage 2 — Runtime:**
+**Stage 2 -- Runtime:**
 ```dockerfile
 FROM python:3.12-slim AS final
 # Installs: git, Go binary, Python ML package
@@ -280,6 +411,8 @@ FROM python:3.12-slim AS final
 ```
 
 ### Docker Compose
+
+> **Note:** The current docker-compose.yml only defines the Qdrant service. The `devai` service definition exists but has not been tested.
 
 ```yaml
 services:

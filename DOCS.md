@@ -2,9 +2,31 @@
 
 > **DevAI** (/dɛv.aɪ/) — An AI code intelligence engine that gives AI agents semantic understanding of codebases through AST-level indexing, vector search, and persistent memory.
 
+> **Warning**
+> **Alpha — Active Development.** This project is functional but not production-ready. APIs, CLI flags, storage formats, and config schemas may change without notice. No releases have been published yet — install from source or wait for v0.1.0.
+
 ---
 
 [README](README.md) &#8226; [Architecture](#architecture) &#8226; [API](#api) &#8226; [MCP Tools](#mcp-tools) &#8226; [Schemas](#schemas) &#8226; [Setup](#setup) &#8226; [Features](#features)
+
+---
+
+## Quick Install
+
+```bash
+# Linux / macOS (downloads binary + portable Python — no prerequisites)
+curl -fsSL https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.ps1 | iex
+
+# From source (requires Go 1.24+, Python 3.11+)
+git clone https://github.com/snaven10/devai-context-engine.git devai && cd devai && make build
+```
+
+Flags: `--gpu` (CUDA PyTorch), `--version TAG` (pin release), `--uninstall` (remove). See [Setup](docs/setup.md) for full details.
+
+> **Note:** The install scripts download from GitHub releases. Until the first release is published, use the "from source" method.
 
 ---
 
@@ -56,10 +78,13 @@ Exact SQL CREATE statements and LanceDB schema definitions.
 
 Installation, configuration, dependencies, Makefile targets, and Docker.
 
-- From source, Docker, binary locations
-- Project config (`.devai/config.yaml`)
+- **One-line install scripts** (Linux, macOS, Windows) — no Go/Python required
+- Install flags: `--gpu`, `--version`, `--uninstall`
+- From source (for developers), Docker
+- Project config (`.devai/config.yaml`) — all options documented
 - 8 environment variables
-- Storage mode configuration (local, shared, hybrid)
+- Storage mode configuration (local, shared, hybrid) with examples
+- Push/pull/sync workflow for team index sharing
 - Claude Code MCP server setup
 - Qdrant deployment options
 - 4 embedding providers
@@ -128,3 +153,17 @@ devai hooks uninstall       Remove auto-index hook
 | Index Repo | Trigger new indexing |
 
 **Navigation:** `j`/`k` or arrows, `Enter` select, `b` back, `q` quit.
+
+---
+
+## Current Limitations
+
+This is alpha software. Key limitations to be aware of:
+
+- **No published releases yet** — install scripts will fail until the first GitHub release is cut
+- **Memories are local only** — SQLite-backed, not shared via Qdrant
+- **Windows is untested** — the PowerShell install script exists but has not been validated
+- **GPU install path is untested** — `--gpu` flag exists but CUDA support has not been verified
+- **First run requires internet** — the embedding model (~90 MB) is downloaded on first use
+- **Large venv** — ~1.5 GB for CPU-only PyTorch, no slim option
+- **gRPC transport not active** — proto definitions exist but only JSON-RPC stdio is used

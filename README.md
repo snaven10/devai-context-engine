@@ -9,15 +9,40 @@
   Hybrid Go + Python. Single binary. Git-aware.
 </p>
 
+> **Warning**
+> **Alpha — Active Development.** DevAI is under heavy development. APIs, CLI flags, and storage formats may change without notice. Expect rough edges. See [Project Status](#project-status) for what works and what does not.
+
 ---
 
-[Quick Start](#quick-start) &#8226; [Installation](#installation) &#8226; [How It Works](#how-it-works) &#8226; [MCP Tools](#mcp-tools) &#8226; [Agent Setup](#agent-setup) &#8226; [CLI Reference](#cli-reference) &#8226; [Configuration](#configuration) &#8226; [Full Docs](DOCS.md)
+[Quick Start](#quick-start) &#8226; [Install](#install) &#8226; [Project Status](#project-status) &#8226; [How It Works](#how-it-works) &#8226; [MCP Tools](#mcp-tools) &#8226; [Agent Setup](#agent-setup) &#8226; [CLI Reference](#cli-reference) &#8226; [Configuration](#configuration) &#8226; [Full Docs](DOCS.md)
 
 ---
 
 Your AI coding agent has no idea what your codebase looks like. It reads files one at a time, guesses at structure, and forgets everything between sessions. DevAI gives it **semantic understanding** — search by meaning, trace call graphs, resolve symbols, and remember decisions across sessions.
 
 One binary, one state directory, 14 MCP tools.
+
+## Install
+
+The install script downloads a precompiled Go binary and a portable Python runtime. No Go or Python required on your machine.
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts/install.ps1 | iex
+```
+
+**Install script flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--gpu` / `-Gpu` | Install PyTorch with CUDA support (default: CPU-only) |
+| `--version TAG` / `-Version TAG` | Install a specific release version (default: latest) |
+| `--uninstall` / `-Uninstall` | Remove DevAI and all its files |
+
+See [docs/setup.md](docs/setup.md) for detailed setup, manual install from source, and configuration.
 
 ```
   AI Assistant ──MCP──▶ DevAI CLI (Go)
@@ -32,10 +57,49 @@ One binary, one state directory, 14 MCP tools.
               vectors     graphs      memory
 ```
 
+## Project Status
+
+> **Alpha** — this is a working prototype, not a production release.
+
+### Working Features
+
+| Feature | Notes |
+|---------|-------|
+| Local vector indexing (LanceDB) | Default storage, works offline |
+| Semantic code search | Natural language queries against indexed code |
+| AST-aware chunking (tree-sitter) | 25+ languages, 4 chunk levels |
+| Symbol reference tracking | Cross-repo call graph and import graph |
+| Git-aware incremental indexing | Only processes changed files via `git diff` |
+| Branch overlay and deduplication | Feature branch changes take priority over main |
+| Persistent memory (SQLite) | Decisions, patterns, bugs with dedup and topic key upserts |
+| MCP server integration | Works with Claude Code, Cursor, Windsurf, any MCP client |
+| TUI dashboard | 9 screens for browsing repos, search, memory, history |
+| Shared storage mode (Qdrant) | Team-wide code search via remote Qdrant |
+| Hybrid storage mode | Local + shared with graceful degradation |
+| Push/pull/sync index commands | Bidirectional sync between local and Qdrant |
+| Cross-platform install scripts | Linux, macOS (bash), Windows (PowerShell) |
+
+### Known Issues / Not Yet Implemented
+
+| Issue | Details |
+|-------|---------|
+| GPU support in install scripts | `--gpu` flag exists but CUDA install path is untested |
+| `devai setup` command | Implemented but not tested end-to-end with python-build-standalone |
+| GitHub Actions release workflow | Configured but no releases published yet — install script will fail until first release is cut |
+| Memory sharing via Qdrant | Not implemented — memories are SQLite local only, not shared across machines |
+| Windows support | Install script exists but is untested on real Windows machines |
+| Model download on first run | Requires internet connection, no offline model bundle |
+| Large venv size | ~1.5 GB for CPU-only PyTorch — no slim install option yet |
+| docker-compose.yml | Only has Qdrant service, no full-stack compose with DevAI service |
+| gRPC transport | Proto definitions exist but are not used — JSON-RPC over stdio is the only transport |
+| OpenAI / Voyage embedding providers | Code exists but integration testing is minimal |
+
+---
+
 ## Quick Start
 
 ```bash
-# 1. Build
+# 1. Build (from source — see Install section above for the easier path)
 make build
 
 # 2. Initialize a repository

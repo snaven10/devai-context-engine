@@ -2,6 +2,9 @@
 
 > Back to [DOCS](../DOCS.md) | [README](../README.md)
 
+> **Warning**
+> DevAI is in **alpha**. Tool parameters and response schemas may change between versions.
+
 ---
 
 All 17 tools are registered in `internal/mcp/server.go` and exposed via the MCP stdio protocol. Start with `devai server mcp`.
