@@ -45,21 +45,32 @@ function Invoke-Download {
         [string]$Dest
     )
     $ProgressPreference = 'SilentlyContinue'
-    try {
-        Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing -MaximumRetryCount 3 -RetryIntervalSec 2
-    } catch {
-        throw "Download failed: $Url -> $_"
+    $attempts = 3
+    for ($i = 1; $i -le $attempts; $i++) {
+        try {
+            Invoke-WebRequest -Uri $Url -OutFile $Dest -UseBasicParsing
+            return
+        } catch {
+            if ($i -eq $attempts) { throw "Download failed after $attempts attempts: $Url -> $_" }
+            Write-Warn "Download attempt $i failed, retrying in 2s..."
+            Start-Sleep -Seconds 2
+        }
     }
 }
 
 function Get-GitHubJson {
     param([string]$Url)
     $ProgressPreference = 'SilentlyContinue'
-    try {
-        $response = Invoke-RestMethod -Uri $Url -UseBasicParsing -MaximumRetryCount 3 -RetryIntervalSec 2
-        return $response
-    } catch {
-        throw "Failed to fetch: $Url -> $_"
+    $attempts = 3
+    for ($i = 1; $i -le $attempts; $i++) {
+        try {
+            $response = Invoke-RestMethod -Uri $Url -UseBasicParsing
+            return $response
+        } catch {
+            if ($i -eq $attempts) { throw "Failed to fetch after $attempts attempts: $Url -> $_" }
+            Write-Warn "Fetch attempt $i failed, retrying in 2s..."
+            Start-Sleep -Seconds 2
+        }
     }
 }
 
