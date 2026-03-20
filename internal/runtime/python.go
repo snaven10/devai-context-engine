@@ -35,9 +35,9 @@ func FindPython(cfg *config.ProjectConfig) string {
 		}
 	}
 
-	// 3. Installed location (~/.local/share/devai/python/venv)
-	if home, err := os.UserHomeDir(); err == nil {
-		p := filepath.Join(home, ".local", "share", "devai", "python", "venv", venvBinPython())
+	// 3. Installed location (platform-specific)
+	for _, base := range installedBaseDirs() {
+		p := filepath.Join(base, "python", "venv", venvBinPython())
 		if fileExists(p) {
 			fmt.Fprintf(os.Stderr, "[runtime] python: using installed venv: %s\n", p)
 			return p
@@ -84,6 +84,22 @@ func systemPython() string {
 		return "python"
 	}
 	return "python3"
+}
+
+// installedBaseDirs returns candidate install directories in priority order.
+// Windows: %LOCALAPPDATA%\devai, then ~/.local/share/devai
+// Unix: ~/.local/share/devai
+func installedBaseDirs() []string {
+	var dirs []string
+	if goruntime.GOOS == "windows" {
+		if localAppData := os.Getenv("LOCALAPPDATA"); localAppData != "" {
+			dirs = append(dirs, filepath.Join(localAppData, "devai"))
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".local", "share", "devai"))
+	}
+	return dirs
 }
 
 // fileExists checks whether the given path exists and is not a directory.
