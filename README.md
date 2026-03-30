@@ -14,7 +14,7 @@
 
 ---
 
-[Quick Start](#quick-start) &#8226; [Install](#install) &#8226; [Project Status](#project-status) &#8226; [How It Works](#how-it-works) &#8226; [MCP Tools](#mcp-tools) &#8226; [Agent Setup](#agent-setup) &#8226; [CLI Reference](#cli-reference) &#8226; [Configuration](#configuration) &#8226; [Full Docs](DOCS.md)
+[Quick Start](#quick-start) &#8226; [Install](#install) &#8226; [Project Status](#project-status) &#8226; [How It Works](#how-it-works) &#8226; [MCP Tools](#mcp-tools) &#8226; [Agent Setup](#agent-setup) &#8226; [CLI Reference](#cli-reference) &#8226; [Configuration](#configuration) &#8226; [Full Docs](#documentation)
 
 ---
 
@@ -42,7 +42,7 @@ irm https://raw.githubusercontent.com/snaven10/devai-context-engine/main/scripts
 | `--version TAG` / `-Version TAG` | Install a specific release version (default: latest) |
 | `--uninstall` / `-Uninstall` | Remove DevAI and all its files |
 
-See [docs/setup.md](docs/setup.md) for detailed setup, manual install from source, and configuration.
+See [Introduction](docs/01-introduction.md) for detailed setup, manual install from source, and configuration.
 
 ```
   AI Assistant ──MCP──▶ DevAI CLI (Go)
@@ -459,6 +459,43 @@ devai/
 8. **Incremental by default** — `git diff` between commits; full reindex only on model change
 9. **Agent-agnostic** — standard MCP over stdio; works with any compliant client
 10. **Memory dedup** — normalized hash + 15-min window prevents noise from repeated saves
+
+---
+
+## Documentation
+
+> **🇬🇧 English** — [`docs/`](docs/) | **🇪🇸 Español** — [`docs/es/`](docs/es/)
+
+Full documentation is available in both languages. Each document links to its counterpart at the top.
+
+### Getting Started
+
+- [Introduction](docs/01-introduction.md) — What DevAI is, the problem it solves, Quick Start in 5 minutes
+- [Architecture](docs/02-architecture.md) — System diagram, component deep dive, data flow
+
+### Core Concepts
+
+- [Semantic Search](docs/03-core-concepts/search.md) — Indexing pipeline, chunking, branch-aware queries
+- [Symbol Graph](docs/03-core-concepts/symbol-graph.md) — AST-based call/import graphs, edge types, navigation
+- [Memory](docs/03-core-concepts/memory.md) — Persistent memories, deduplication, topic key upserts
+- [Context Builder](docs/03-core-concepts/context-builder.md) — Token-budget-aware context assembly for LLMs
+- [MCP Integration](docs/03-core-concepts/mcp-integration.md) — All 14 MCP tools, auto-configure, handler architecture
+
+### Using DevAI
+
+- [Agent Workflow](docs/04-agent-workflow.md) — How AI agents use DevAI, tool selection patterns
+
+### End-to-End Examples
+
+- [Debugging a Bug](docs/05-examples/debugging.md) — 7 MCP calls to find a production bug
+- [Onboarding to a Codebase](docs/05-examples/onboarding.md) — Zero to productive in one session
+- [Planning a Refactor](docs/05-examples/refactoring.md) — Blast radius analysis with search + graph + memory
+
+### For Contributors
+
+- [Extending the System](docs/06-extending-the-system.md) — Add tools, providers, languages, storage backends
+- [Performance](docs/07-performance.md) — Latency, throughput, sizing, optimization tips
+- [Design Decisions](docs/08-design-decisions.md) — 12 Architecture Decision Records with tradeoffs
 
 ---
 
