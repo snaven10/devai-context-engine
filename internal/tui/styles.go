@@ -182,6 +182,12 @@ var (
 				Foreground(colorText)
 )
 
+// ─── Update Notice ─────────────────────────────────────────────────────────
+
+var styleUpdateNotice = lipgloss.NewStyle().
+	Foreground(colorWarm).
+	Bold(true)
+
 // ─── Key Help ───────────────────────────────────────────────────────────────
 
 var (

@@ -69,6 +69,10 @@ type (
 		Events []SessionEvent
 		Error  error
 	}
+	versionCheckMsg struct {
+		LatestVersion string
+		IsNewer       bool
+	}
 )
 
 // ─── Data Types ──────────────────────────────────────────────────────────────
@@ -183,10 +187,11 @@ type Model struct {
 	pathSugIndex    int
 
 	// State
-	loading   bool
-	spinner   spinner.Model
-	statusMsg string
-	errorMsg  string
+	loading       bool
+	spinner       spinner.Model
+	statusMsg     string
+	errorMsg      string
+	latestVersion string // set when a newer version is available
 }
 
 // New creates a new TUI model connected to the given MCP client.
@@ -229,13 +234,16 @@ func New(client *mlclient.StdioClient, version string) Model {
 	}
 }
 
-// Init loads initial data (dashboard repos + spinner).
+// Init loads initial data (dashboard repos + spinner + version check).
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
 		loadDashboard(m.client),
+		checkVersionAsync(m.version),
 	)
 }
+
+
 
 // ─── Commands (async data loading) ──────────────────────────────────────────
 

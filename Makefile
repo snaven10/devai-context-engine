@@ -1,8 +1,12 @@
-.PHONY: build build-go build-ml test test-go test-ml lint proto clean docker docker-up docker-down install dev
+.PHONY: build build-go build-ml test test-go test-ml lint proto clean docker docker-up docker-down install dev release
 
 # Go
 GO_BIN = devai
 GO_SRC = ./cmd/devai
+# Version injection
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "none")
+LDFLAGS = -ldflags "-X main.version=$(VERSION) -X main.commit=$(COMMIT)"
 
 # Python
 ML_DIR = ml
@@ -16,7 +20,7 @@ all: build
 build: build-go build-ml
 
 build-go:
-	go build -o $(GO_BIN) $(GO_SRC)
+	go build $(LDFLAGS) -o $(GO_BIN) $(GO_SRC)
 
 build-ml:
 	cd $(ML_DIR) && pip install -e .
@@ -64,12 +68,20 @@ docker-down:
 ## Install
 
 install: build-go
-	go install $(GO_SRC)
+	mkdir -p $(HOME)/.local/share/devai/bin
+	cp $(GO_BIN) $(HOME)/.local/share/devai/bin/$(GO_BIN)
+	@echo "Installed to $(HOME)/.local/share/devai/bin/$(GO_BIN)"
+
+## Release — build for current platform and install
+release: build-go
+	mkdir -p $(HOME)/.local/share/devai/bin
+	cp $(GO_BIN) $(HOME)/.local/share/devai/bin/$(GO_BIN)
+	@echo "Released $(VERSION) ($(COMMIT)) to $(HOME)/.local/share/devai/bin/$(GO_BIN)"
 
 ## Development
 
 dev: build-ml build-go
-	@echo "DevAI development build complete"
+	@echo "DevAI development build complete ($(VERSION))"
 	@echo "  Go binary: ./$(GO_BIN)"
 	@echo "  ML service: python -m devai_ml.server"
 
@@ -83,15 +95,19 @@ clean:
 ## Help
 
 help:
-	@echo "DevAI Build System"
+	@echo "DevAI Build System ($(VERSION))"
 	@echo ""
 	@echo "  make build       Build Go binary + install Python package"
+	@echo "  make build-go    Build Go binary only (with version injection)"
 	@echo "  make test        Run all tests"
 	@echo "  make lint        Run linters"
 	@echo "  make proto       Generate gRPC stubs from proto"
+	@echo "  make install     Build and install to ~/.local/share/devai/bin/"
+	@echo "  make release     Build versioned binary and install"
 	@echo "  make docker      Build Docker image"
 	@echo "  make docker-up   Start Docker Compose stack"
 	@echo "  make docker-down Stop Docker Compose stack"
-	@echo "  make install     Install Go binary"
 	@echo "  make dev         Development build"
 	@echo "  make clean       Clean build artifacts"
+	@echo ""
+	@echo "  VERSION=$(VERSION)  COMMIT=$(COMMIT)"

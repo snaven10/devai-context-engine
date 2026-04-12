@@ -14,7 +14,16 @@ func (m Model) View() string {
 
 	// Header
 	b.WriteString(styleHeader.Render("DevAI") + " ")
-	b.WriteString(styleSubtitle.Render("Code Intelligence") + "\n")
+	b.WriteString(styleSubtitle.Render("Code Intelligence"))
+	if m.version != "" && m.version != "dev" {
+		b.WriteString(" " + styleResultLine.Render(m.version))
+	}
+	if m.latestVersion != "" {
+		b.WriteString("  " + styleUpdateNotice.Render(
+			fmt.Sprintf("Update available: %s (run: devai upgrade)", m.latestVersion),
+		))
+	}
+	b.WriteString("\n")
 
 	// Screen content
 	switch m.screen {

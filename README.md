@@ -84,15 +84,13 @@ See [Introduction](docs/01-introduction.md) for detailed setup, manual install f
 | Issue | Details |
 |-------|---------|
 | GPU support in install scripts | `--gpu` flag exists but CUDA install path is untested |
-| `devai setup` command | Implemented but not tested end-to-end with python-build-standalone |
-| GitHub Actions release workflow | Configured but no releases published yet — install script will fail until first release is cut |
 | Memory sharing via Qdrant | Not implemented — memories are SQLite local only, not shared across machines |
 | Windows support | Install script exists but is untested on real Windows machines |
-| Model download on first run | Requires internet connection, no offline model bundle |
 | Large venv size | ~1.5 GB for CPU-only PyTorch — no slim install option yet |
 | docker-compose.yml | Only has Qdrant service, no full-stack compose with DevAI service |
 | gRPC transport | Proto definitions exist but are not used — JSON-RPC over stdio is the only transport |
 | OpenAI / Voyage embedding providers | Code exists but integration testing is minimal |
+| PHP tree-sitter parser | Not yet bundled — PHP files are indexed as raw text without AST parsing |
 
 ---
 
@@ -308,7 +306,7 @@ devai tui
 
 The TUI provides 9 screens for browsing and managing your indexed repositories:
 
-- **Dashboard** — overview of indexed repos
+- **Dashboard** — overview of indexed repos, version info, update notifications
 - **Search Code** — semantic search with vim-key navigation
 - **Repositories** — browse repos with stats
 - **Branches** — per-branch indexing status
@@ -316,6 +314,8 @@ The TUI provides 9 screens for browsing and managing your indexed repositories:
 - **Session History** — tool call history and timings
 - **Index Repository** — trigger indexing on new repos
 - **Detail View** — full code snippets with line numbers
+
+The TUI automatically checks for new versions on startup and displays a notification in the header if an update is available.
 
 **Navigation**: `j`/`k` or arrow keys, `Enter` to select, `q` to quit, `b` for back.
 
@@ -334,12 +334,16 @@ devai server status         Check ML service health
 devai server mcp            Start MCP server (stdio)
 devai server configure      Configure DevAI as MCP server in AI clients
 devai status                Show ML service health and model info
-devai index-status          Show per-branch index statistics
+devai model list            List available embedding models with cache status
+devai model update          Update embedding model from HuggingFace Hub
+devai model info            Show current model details
+devai upgrade               Upgrade devai to the latest version
+devai upgrade --check       Check for updates without installing
 devai hooks install         Install git post-commit hook
 devai hooks uninstall       Remove auto-index hook
 
 Global flags:
-  --config FILE             Path to config file
+  --config FILE             Path to config file (default: auto-detect .devai/config.yaml)
   --verbose, -v             Enable verbose output
 ```
 
@@ -356,9 +360,12 @@ project:
   name: my-repo
   path: /full/path/to/repo
 
+state_dir: /full/path/to/repo/.devai/state
+
 embeddings:
   provider: local
   model: minilm-l6
+  # offline: auto  # auto | true | false
 
 storage:
   mode: local
@@ -375,6 +382,13 @@ indexing:
     - "*.lock"
 ```
 
+**Key fields:**
+
+| Field | Description |
+|-------|-------------|
+| `state_dir` | Where to store index data (vectors, graphs, memories). Each project can have its own isolated index. |
+| `embeddings.offline` | `auto` (default) uses cached model without HF Hub check for fast startup. `true` always offline. `false` always checks for updates. |
+
 ### Environment Variables
 
 | Variable | Description | Default |
@@ -383,7 +397,21 @@ indexing:
 | `DEVAI_PYTHON` | Python binary path | Auto-detected |
 | `DEVAI_ML_MODEL` | Embedding model | `minilm-l6` |
 | `DEVAI_STORAGE_MODE` | `local`, `shared`, or `hybrid` | `local` |
+| `DEVAI_EMBEDDINGS_OFFLINE` | Override offline mode for model loading | `auto` |
 | `DEVAI_API_TOKEN` | Token for shared mode | — |
+
+### Embedding Models
+
+Available models (use `devai model list` to see cache status):
+
+| Key | Model | Dimension | Notes |
+|-----|-------|-----------|-------|
+| `minilm-l6` | all-MiniLM-L6-v2 | 384 | Default. Fast, lightweight. |
+| `minilm-l12` | all-MiniLM-L12-v2 | 384 | Better quality, slightly slower. |
+| `bge-small` | BAAI/bge-small-en-v1.5 | 384 | Good for English code. |
+| `bge-base` | BAAI/bge-base-en-v1.5 | 768 | Best quality, 2x dimension. |
+
+To update the model: `devai model update`
 
 ### Embedding Providers
 

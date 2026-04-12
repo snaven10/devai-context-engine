@@ -103,6 +103,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.eventIndex = 0
 		}
 		return m, nil
+
+	case versionCheckMsg:
+		if msg.IsNewer && msg.LatestVersion != "" {
+			m.latestVersion = msg.LatestVersion
+		}
+		return m, nil
 	}
 
 	return m, nil
