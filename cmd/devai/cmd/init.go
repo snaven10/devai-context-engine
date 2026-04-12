@@ -58,6 +58,8 @@ project:
   name: %s
   path: %s
 
+state_dir: %s
+
 embeddings:
   provider: local
   model: minilm-l6
@@ -77,7 +79,7 @@ indexing:
     - "build/**"
     - "*.min.js"
     - "*.lock"
-`, name, absPath)
+`, name, absPath, stateDir)
 
 		if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 			return fmt.Errorf("writing config: %w", err)
