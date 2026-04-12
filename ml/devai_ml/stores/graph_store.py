@@ -67,7 +67,7 @@ class SQLiteGraphStore:
         self._conn.executescript(self.SCHEMA)
         self._conn.commit()
         self._normalize_existing_data()
-        logger.info("GraphStore initialized at %s", db_path)
+        logger.debug("GraphStore initialized at %s", db_path)
 
     def _normalize_existing_data(self) -> None:
         """Clean up existing data: normalize repo paths and remove duplicates."""

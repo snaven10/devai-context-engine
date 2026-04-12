@@ -33,7 +33,6 @@ class MLService:
         self._config = config
 
         # Initialize components
-        logger.info("Initializing ML service...")
         self._embedding = create_provider(config.get("embeddings", {}))
         self._parser_registry = ParserRegistry()
         self._chunker = SemanticChunker()
@@ -50,7 +49,7 @@ class MLService:
             or xdg_default
         )
         state_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("State directory: %s", state_dir)
+        logger.debug("State directory: %s", state_dir)
 
         # Vector store: use factory for backend selection (local/shared/hybrid).
         # The factory reads DEVAI_STORAGE_MODE from env. Default is "local"
@@ -60,7 +59,7 @@ class MLService:
         if not storage_config.local_db_path:
             storage_config.local_db_path = str(state_dir / "vectors")
         storage_config.dimension = self._embedding.dimension()
-        logger.info(
+        logger.debug(
             "Storage mode: %s (local_db=%s, qdrant=%s)",
             storage_config.mode,
             storage_config.local_db_path,
@@ -86,12 +85,7 @@ class MLService:
             index_store=self._index_store,
         )
 
-        logger.info(
-            "ML service ready (model=%s, dim=%d, languages=%d)",
-            self._embedding.model_name(),
-            self._embedding.dimension(),
-            len(self._parser_registry.supported_languages()),
-        )
+        # Ready message is emitted by serve_stdio() after construction
 
     @staticmethod
     def _repo_name(repo: str) -> str:
@@ -1025,12 +1019,20 @@ def serve_stdio(config: dict[str, Any] | None = None) -> None:
     # Silence noisy libraries — nobody wants 30 lines of HTTP HEAD requests
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+    logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
     logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
     logging.getLogger("transformers").setLevel(logging.WARNING)
     logging.getLogger("torch").setLevel(logging.WARNING)
 
     service = MLService(config)
+
+    emb = service._embedding
+    # Single concise ready line with key info
+    logger.info(
+        "ML service ready (model=%s, dim=%d, languages=%d)",
+        emb.model_name(), emb.dimension(),
+        len(service._parser_registry.supported_languages()),
+    )
 
     # Signal ready
     sys.stderr.write("DEVAI_ML_READY\n")

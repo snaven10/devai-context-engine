@@ -83,7 +83,7 @@ class IndexStateStore:
         self._conn.executescript(self.SCHEMA)
         self._conn.commit()
         self.normalize_paths()
-        logger.info("IndexStateStore initialized at %s", db_path)
+        logger.debug("IndexStateStore initialized at %s", db_path)
 
     def normalize_paths(self) -> None:
         """Remove trailing slashes from all repo_path entries.

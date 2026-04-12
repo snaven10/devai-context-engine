@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from sentence_transformers import SentenceTransformer
+import os
+from pathlib import Path
 from .base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,24 @@ MODELS = {
 }
 
 
+def _model_is_cached(model_name: str) -> bool:
+    """Check if a HuggingFace model is already downloaded in the local cache."""
+    cache_dir = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub"
+    # HF cache uses models--{org}--{name} or models--{name} directory format
+    safe_name = model_name.replace("/", "--")
+    candidate = cache_dir / f"models--{safe_name}"
+    if candidate.exists():
+        # Verify it has actual model files (not just metadata)
+        snapshots = candidate / "snapshots"
+        return snapshots.exists() and any(snapshots.iterdir())
+    # Also check sentence-transformers namespaced variant
+    candidate_st = cache_dir / f"models--sentence-transformers--{safe_name}"
+    if candidate_st.exists():
+        snapshots = candidate_st / "snapshots"
+        return snapshots.exists() and any(snapshots.iterdir())
+    return False
+
+
 class LocalEmbedding:
     """Local embedding provider using sentence-transformers."""
 
@@ -21,12 +40,27 @@ class LocalEmbedding:
         if model_key not in MODELS:
             raise ValueError(f"Unknown model: {model_key}. Available: {list(MODELS.keys())}")
         name, dim = MODELS[model_key]
-        logger.info("Loading embedding model: %s (dim=%d, device=%s)", name, dim, device)
-        self._model = SentenceTransformer(name, device=device)
+
+        # Use cached model without HTTP check when available (faster startup)
+        cached = _model_is_cached(name)
+        if cached:
+            logger.info("Loading embedding model: %s (cached, dim=%d)", name, dim)
+            # Set offline mode BEFORE importing sentence_transformers to prevent
+            # HTTP requests to HuggingFace Hub and silence auth warnings
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            from sentence_transformers import SentenceTransformer
+            try:
+                self._model = SentenceTransformer(name, device=device)
+            finally:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            logger.info("Downloading embedding model: %s (dim=%d, device=%s)", name, dim, device)
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(name, device=device)
+
         self._dim = dim
         self._name = name
         self._key = model_key
-        logger.info("Model loaded successfully")
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:

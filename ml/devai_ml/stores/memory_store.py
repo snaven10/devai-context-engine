@@ -113,7 +113,7 @@ class MemoryStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(self.SCHEMA)
         self._conn.commit()
-        logger.info("MemoryStore initialized at %s", db_path)
+        logger.debug("MemoryStore initialized at %s", db_path)
 
     def close(self) -> None:
         self._conn.close()

@@ -71,7 +71,7 @@ class LanceDBVectorStore:
         self._dimension = dimension
         self._table = self._get_or_create_table()
         self._ensure_schema()
-        logger.info("LanceDB store initialized at %s (table=%s)", db_path, table_name)
+        logger.debug("LanceDB store initialized at %s (table=%s)", db_path, table_name)
 
     def _ensure_schema(self):
         """Migrate existing tables that are missing new columns.
