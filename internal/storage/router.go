@@ -132,7 +132,7 @@ func (r *Router) Mode() Mode {
 
 // NewFromConfigWithEnvOverride creates a Router from a ProjectConfig, allowing
 // environment variables to override config file values. Priority:
-// env var (if non-empty) > config file value > default.
+// env var (if non-empty) > config file value > state_dir-derived > default.
 func NewFromConfigWithEnvOverride(projectCfg config.ProjectConfig) (*Router, error) {
 	// Start with config file values.
 	mode := projectCfg.Storage.Mode
@@ -161,11 +161,16 @@ func NewFromConfigWithEnvOverride(projectCfg config.ProjectConfig) (*Router, err
 	}
 
 	if localPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("cannot determine home directory: %w", err)
+		// If state_dir is set in config, derive vectors path from it
+		if projectCfg.StateDir != "" {
+			localPath = projectCfg.StateDir + "/vectors"
+		} else {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return nil, fmt.Errorf("cannot determine home directory: %w", err)
+			}
+			localPath = home + "/.local/share/devai/state/vectors"
 		}
-		localPath = home + "/.local/share/devai/state/vectors"
 	}
 
 	cfg := Config{
