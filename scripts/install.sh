@@ -332,7 +332,9 @@ install_python_deps() {
     local wheel_url
     wheel_url=$(echo "${RELEASE_INFO}" | grep -o '"browser_download_url":\s*"[^"]*devai_ml-[^"]*\.whl"' | head -1 | cut -d'"' -f4)
     if [[ -n "${wheel_url}" ]]; then
-        local wheel_path="${TMP_DIR}/devai_ml.whl"
+        local wheel_name
+        wheel_name=$(basename "${wheel_url}")
+        local wheel_path="${TMP_DIR}/${wheel_name}"
         info "Installing devai_ml wheel..."
         download "${wheel_url}" "${wheel_path}"
         "${pip}" install "${wheel_path}" --quiet \
