@@ -22,6 +22,7 @@ type ProjectConfig struct {
 	Embeddings struct {
 		Provider string `yaml:"provider"`
 		Model    string `yaml:"model"`
+		Offline  string `yaml:"offline"` // "auto" (default), "true", or "false"
 	} `yaml:"embeddings"`
 	Storage struct {
 		Mode        string `yaml:"mode"`

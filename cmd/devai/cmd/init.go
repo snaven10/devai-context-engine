@@ -63,6 +63,7 @@ state_dir: %s
 embeddings:
   provider: local
   model: minilm-l6
+  # offline: auto  # auto=use cache when available, true=always offline, false=always check HF Hub
 
 storage:
   mode: local

@@ -133,6 +133,7 @@ class MLService:
             "push_index": self._handle_push_index,
             "pull_index": self._handle_pull_index,
             "sync_index": self._handle_sync_index,
+            "model_list": self._handle_model_list,
         }
 
         handler = handlers.get(method)
@@ -1003,6 +1004,21 @@ class MLService:
             "languages_supported": self._parser_registry.supported_languages(),
         }
 
+    def _handle_model_list(self, params: dict) -> dict:
+        """List available embedding models with cache status."""
+        from .embeddings.local import list_available_models, _model_is_cached
+        models = list_available_models()
+        current = self._embedding.model_name()
+        result = []
+        for key, (name, dim) in models.items():
+            result.append({
+                "key": key,
+                "name": name,
+                "dimension": dim,
+                "cached": _model_is_cached(name),
+            })
+        return {"current": current, "models": result}
+
 
 def serve_stdio(config: dict[str, Any] | None = None) -> None:
     """Run the ML service over stdin/stdout JSON-RPC."""
@@ -1023,6 +1039,12 @@ def serve_stdio(config: dict[str, Any] | None = None) -> None:
     logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
     logging.getLogger("transformers").setLevel(logging.WARNING)
     logging.getLogger("torch").setLevel(logging.WARNING)
+
+    # Allow env var override for offline mode (used by devai model update)
+    offline_env = os.environ.get("DEVAI_EMBEDDINGS_OFFLINE")
+    if offline_env is not None:
+        emb_config = config.setdefault("embeddings", {})
+        emb_config["offline"] = offline_env.lower() in ("true", "1")
 
     service = MLService(config)
 

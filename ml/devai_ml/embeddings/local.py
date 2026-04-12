@@ -33,20 +33,43 @@ def _model_is_cached(model_name: str) -> bool:
     return False
 
 
-class LocalEmbedding:
-    """Local embedding provider using sentence-transformers."""
+def list_available_models() -> dict[str, tuple[str, int]]:
+    """Return the available model registry."""
+    return dict(MODELS)
 
-    def __init__(self, model_key: str = "minilm-l6", device: str = "cpu") -> None:
+
+class LocalEmbedding:
+    """Local embedding provider using sentence-transformers.
+
+    Args:
+        model_key: Key from MODELS registry (e.g. "minilm-l6").
+        device: "cpu" or "cuda".
+        offline: Controls network access for model loading.
+            - "auto" (default): offline when cached, online when not.
+            - True: always offline (fail if not cached).
+            - False: always online (check HF Hub for updates).
+    """
+
+    def __init__(self, model_key: str = "minilm-l6", device: str = "cpu",
+                 offline: str | bool = "auto") -> None:
         if model_key not in MODELS:
             raise ValueError(f"Unknown model: {model_key}. Available: {list(MODELS.keys())}")
         name, dim = MODELS[model_key]
-
-        # Use cached model without HTTP check when available (faster startup)
         cached = _model_is_cached(name)
-        if cached:
+
+        # Resolve offline mode
+        if offline == "auto":
+            use_offline = cached
+        else:
+            use_offline = bool(offline)
+
+        if use_offline:
+            if not cached:
+                raise RuntimeError(
+                    f"Model {name} not cached and offline=true. "
+                    f"Run 'devai model update' to download it first."
+                )
             logger.info("Loading embedding model: %s (cached, dim=%d)", name, dim)
-            # Set offline mode BEFORE importing sentence_transformers to prevent
-            # HTTP requests to HuggingFace Hub and silence auth warnings
             os.environ["HF_HUB_OFFLINE"] = "1"
             from sentence_transformers import SentenceTransformer
             try:
@@ -54,7 +77,8 @@ class LocalEmbedding:
             finally:
                 os.environ.pop("HF_HUB_OFFLINE", None)
         else:
-            logger.info("Downloading embedding model: %s (dim=%d, device=%s)", name, dim, device)
+            action = "Updating" if cached else "Downloading"
+            logger.info("%s embedding model: %s (dim=%d, device=%s)", action, name, dim, device)
             from sentence_transformers import SentenceTransformer
             self._model = SentenceTransformer(name, device=device)
 

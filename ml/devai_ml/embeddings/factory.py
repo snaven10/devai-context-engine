@@ -26,6 +26,7 @@ def create_provider(config: dict[str, Any]) -> EmbeddingProvider:
         return LocalEmbedding(
             model_key=config.get("model", "minilm-l6"),
             device=config.get("device", "cpu"),
+            offline=config.get("offline", "auto"),
         )
 
     if provider_type == "openai":
