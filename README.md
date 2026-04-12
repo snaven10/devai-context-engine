@@ -499,6 +499,21 @@ Full documentation is available in both languages. Each document links to its co
 
 ---
 
+## Contributing
+
+Contributions are welcome! If you want to help improve DevAI, feel free to:
+
+1. **Fork** the repository
+2. **Create a branch** for your feature or fix (`git checkout -b my-feature`)
+3. **Commit** your changes
+4. **Open a Pull Request** with a clear description of what you changed and why
+
+Whether it's a bug fix, a new feature, documentation improvements, or support for a new language — all contributions are appreciated.
+
+If you find a bug or have a feature request, [open an issue](https://github.com/snaven10/devai-context-engine/issues) so we can discuss it.
+
+---
+
 ## License
 
-Private — All rights reserved.
+MIT — see [LICENSE](LICENSE) for details.
