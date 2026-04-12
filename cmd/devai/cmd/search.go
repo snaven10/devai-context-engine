@@ -32,7 +32,11 @@ func runSearch(cmd *cobra.Command, args []string) error {
 	language, _ := cmd.Flags().GetString("language")
 	format, _ := cmd.Flags().GetString("format")
 
-	client, err := mlclient.NewStdioClient()
+	opts, err := resolvedClientOpts()
+	if err != nil {
+		return fmt.Errorf("resolving config: %w", err)
+	}
+	client, err := mlclient.NewStdioClient(opts...)
 	if err != nil {
 		return fmt.Errorf("connecting to ML service: %w", err)
 	}

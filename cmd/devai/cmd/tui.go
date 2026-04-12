@@ -23,7 +23,11 @@ func init() {
 
 func runTUI(cmd *cobra.Command, args []string) error {
 	// Start ML service as sidecar
-	client, err := mlclient.NewStdioClient()
+	opts, err := resolvedClientOpts()
+	if err != nil {
+		return fmt.Errorf("resolving config: %w", err)
+	}
+	client, err := mlclient.NewStdioClient(opts...)
 	if err != nil {
 		return fmt.Errorf("starting ML service: %w", err)
 	}

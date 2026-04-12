@@ -8,6 +8,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// resolvedClientOpts loads project config and returns mlclient options
+// with storage env vars, project config, and state dir resolved.
+func resolvedClientOpts() ([]mlclient.Option, error) {
+	projectCfg, storageEnv, err := resolvedStorageConfig()
+	if err != nil {
+		return nil, err
+	}
+	opts := []mlclient.Option{
+		mlclient.WithEnv(storageEnv),
+		mlclient.WithConfig(projectCfg),
+	}
+	return opts, nil
+}
+
 var indexCmd = &cobra.Command{
 	Use:   "index",
 	Short: "Index the current repository",
@@ -25,7 +39,11 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	incremental, _ := cmd.Flags().GetBool("incremental")
 	branch, _ := cmd.Flags().GetString("branch")
 
-	client, err := mlclient.NewStdioClient()
+	opts, err := resolvedClientOpts()
+	if err != nil {
+		return fmt.Errorf("resolving config: %w", err)
+	}
+	client, err := mlclient.NewStdioClient(opts...)
 	if err != nil {
 		return fmt.Errorf("connecting to ML service: %w", err)
 	}

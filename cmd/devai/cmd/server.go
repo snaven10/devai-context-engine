@@ -123,6 +123,11 @@ func runServerStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// If state-dir was not explicitly set via CLI, check config file
+	if !cmd.Flags().Changed("state-dir") && projectCfg != nil && projectCfg.StateDir != "" {
+		stateDir = projectCfg.StateDir
+	}
+
 	pythonBin := runtime.FindPython(projectCfg)
 	mlCmd := exec.Command(pythonBin, "-m", "devai_ml.server",
 		"--model", model,
@@ -160,11 +165,12 @@ func runServerMCP(cmd *cobra.Command, args []string) error {
 	}
 
 	// Start ML service as quiet sidecar (no logs to stderr — MCP uses stderr)
-	client, err := mlclient.NewStdioClient(
+	mcpOpts := []mlclient.Option{
 		mlclient.WithQuiet(),
 		mlclient.WithEnv(storageEnv),
 		mlclient.WithConfig(projectCfg),
-	)
+	}
+	client, err := mlclient.NewStdioClient(mcpOpts...)
 	if err != nil {
 		return fmt.Errorf("starting ML service: %w", err)
 	}

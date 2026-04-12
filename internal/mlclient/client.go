@@ -25,6 +25,7 @@ type StdioClient struct {
 	nextID    atomic.Int64
 	quiet     bool                // suppress stderr forwarding (for MCP mode)
 	extraEnv  []string            // additional env vars for the ML process ("KEY=VALUE")
+	stateDir  string              // state directory to pass to ML process (--state-dir)
 	projectCfg *config.ProjectConfig // optional project config for python resolution
 }
 
@@ -44,9 +45,22 @@ func WithEnv(env []string) Option {
 	return func(c *StdioClient) { c.extraEnv = env }
 }
 
-// WithConfig provides a project configuration for Python binary resolution.
+// WithConfig provides a project configuration for Python binary resolution
+// and state directory resolution. If the config has a StateDir set, it will
+// be used as the default --state-dir for the ML process.
 func WithConfig(cfg *config.ProjectConfig) Option {
-	return func(c *StdioClient) { c.projectCfg = cfg }
+	return func(c *StdioClient) {
+		c.projectCfg = cfg
+		if cfg != nil && cfg.StateDir != "" && c.stateDir == "" {
+			c.stateDir = cfg.StateDir
+		}
+	}
+}
+
+// WithStateDir sets the state directory passed to the ML process via --state-dir.
+// This takes precedence over the value from WithConfig.
+func WithStateDir(dir string) Option {
+	return func(c *StdioClient) { c.stateDir = dir }
 }
 
 type jsonRPCRequest struct {
@@ -79,7 +93,11 @@ func NewStdioClient(opts ...Option) (*StdioClient, error) {
 
 	pythonBin := runtime.FindPython(client.projectCfg)
 
-	cmd := exec.Command(pythonBin, "-m", "devai_ml.server")
+	args := []string{"-m", "devai_ml.server"}
+	if client.stateDir != "" {
+		args = append(args, "--state-dir", client.stateDir)
+	}
+	cmd := exec.Command(pythonBin, args...)
 	client.cmd = cmd
 
 	// Propagate extra env vars to the ML sidecar process.

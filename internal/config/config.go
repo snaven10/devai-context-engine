@@ -18,6 +18,7 @@ type ProjectConfig struct {
 		Name string `yaml:"name"`
 		Path string `yaml:"path"`
 	} `yaml:"project"`
+	StateDir string `yaml:"state_dir"`
 	Embeddings struct {
 		Provider string `yaml:"provider"`
 		Model    string `yaml:"model"`

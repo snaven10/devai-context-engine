@@ -107,7 +107,12 @@ func runWatch(cmd *cobra.Command, args []string) error {
 		pendingChanges = make(map[string]bool)
 
 		// Call ML service
-		client, err := mlclient.NewStdioClient()
+		opts, err := resolvedClientOpts()
+		if err != nil {
+			fmt.Printf("  Error resolving config: %v\n", err)
+			return
+		}
+		client, err := mlclient.NewStdioClient(opts...)
 		if err != nil {
 			fmt.Printf("  Error connecting to ML service: %v\n", err)
 			return

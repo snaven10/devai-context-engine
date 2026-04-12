@@ -18,7 +18,11 @@ func init() {
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
-	client, err := mlclient.NewStdioClient()
+	opts, err := resolvedClientOpts()
+	if err != nil {
+		return fmt.Errorf("resolving config: %w", err)
+	}
+	client, err := mlclient.NewStdioClient(opts...)
 	if err != nil {
 		fmt.Println("ML Service: not running")
 		return nil
