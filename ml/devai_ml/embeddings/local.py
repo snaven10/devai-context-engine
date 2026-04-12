@@ -7,12 +7,73 @@ from .base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 
-MODELS = {
-    "minilm-l6": ("all-MiniLM-L6-v2", 384),
-    "minilm-l12": ("all-MiniLM-L12-v2", 384),
-    "bge-small": ("BAAI/bge-small-en-v1.5", 384),
-    "bge-base": ("BAAI/bge-base-en-v1.5", 768),
+class ModelInfo:
+    """Metadata for an embedding model."""
+    __slots__ = ("name", "dimension", "size_mb", "speed", "quality", "desc_en", "desc_es")
+
+    def __init__(self, name: str, dimension: int, size_mb: int, speed: str,
+                 quality: str, desc_en: str, desc_es: str) -> None:
+        self.name = name
+        self.dimension = dimension
+        self.size_mb = size_mb
+        self.speed = speed       # "fast", "medium", "slow"
+        self.quality = quality   # "good", "better", "best"
+        self.desc_en = desc_en
+        self.desc_es = desc_es
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "dimension": self.dimension,
+            "size_mb": self.size_mb,
+            "speed": self.speed,
+            "quality": self.quality,
+            "desc_en": self.desc_en,
+            "desc_es": self.desc_es,
+        }
+
+
+MODEL_REGISTRY: dict[str, ModelInfo] = {
+    "minilm-l6": ModelInfo(
+        name="all-MiniLM-L6-v2",
+        dimension=384,
+        size_mb=22,
+        speed="fast",
+        quality="good",
+        desc_en="Lightweight 6-layer model. Fastest startup and inference. Good for general code search on resource-constrained machines.",
+        desc_es="Modelo ligero de 6 capas. El mas rapido en inicio e inferencia. Bueno para busqueda general de codigo en maquinas con pocos recursos.",
+    ),
+    "minilm-l12": ModelInfo(
+        name="all-MiniLM-L12-v2",
+        dimension=384,
+        size_mb=33,
+        speed="fast",
+        quality="better",
+        desc_en="12-layer model with better semantic understanding than L6. Good balance between speed and quality for general text and code.",
+        desc_es="Modelo de 12 capas con mejor comprension semantica que L6. Buen balance entre velocidad y calidad para texto general y codigo.",
+    ),
+    "bge-small": ModelInfo(
+        name="BAAI/bge-small-en-v1.5",
+        dimension=384,
+        size_mb=33,
+        speed="fast",
+        quality="better",
+        desc_en="BGE small model trained on diverse retrieval corpus. Better accuracy than MiniLM for semantic search. Recommended for most projects.",
+        desc_es="Modelo BGE pequeno entrenado en corpus diverso de recuperacion. Mejor precision que MiniLM para busqueda semantica. Recomendado para la mayoria de proyectos.",
+    ),
+    "bge-base": ModelInfo(
+        name="BAAI/bge-base-en-v1.5",
+        dimension=768,
+        size_mb=110,
+        speed="medium",
+        quality="best",
+        desc_en="BGE base model with 768 dimensions. State-of-the-art quality for code search and complex queries. Uses 2x storage. Best for large codebases where precision matters.",
+        desc_es="Modelo BGE base con 768 dimensiones. Calidad de vanguardia para busqueda de codigo y consultas complejas. Usa 2x almacenamiento. Mejor para grandes repositorios donde la precision importa.",
+    ),
 }
+
+# Backward-compatible tuple format: (name, dimension)
+MODELS = {k: (v.name, v.dimension) for k, v in MODEL_REGISTRY.items()}
 
 
 def _model_is_cached(model_name: str) -> bool:
@@ -34,8 +95,13 @@ def _model_is_cached(model_name: str) -> bool:
 
 
 def list_available_models() -> dict[str, tuple[str, int]]:
-    """Return the available model registry."""
+    """Return the available model registry (legacy tuple format)."""
     return dict(MODELS)
+
+
+def list_models_detailed() -> dict[str, ModelInfo]:
+    """Return the full model registry with metadata."""
+    return dict(MODEL_REGISTRY)
 
 
 class LocalEmbedding:

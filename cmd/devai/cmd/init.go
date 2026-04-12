@@ -59,6 +59,7 @@ project:
   path: %s
 
 state_dir: %s
+language: es  # en | es
 
 embeddings:
   provider: local

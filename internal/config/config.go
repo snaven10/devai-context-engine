@@ -19,6 +19,7 @@ type ProjectConfig struct {
 		Path string `yaml:"path"`
 	} `yaml:"project"`
 	StateDir string `yaml:"state_dir"`
+	Language string `yaml:"language"` // "en" (default) or "es"
 	Embeddings struct {
 		Provider string `yaml:"provider"`
 		Model    string `yaml:"model"`

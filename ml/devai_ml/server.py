@@ -134,6 +134,7 @@ class MLService:
             "pull_index": self._handle_pull_index,
             "sync_index": self._handle_sync_index,
             "model_list": self._handle_model_list,
+            "model_download": self._handle_model_download,
         }
 
         handler = handlers.get(method)
@@ -1005,19 +1006,33 @@ class MLService:
         }
 
     def _handle_model_list(self, params: dict) -> dict:
-        """List available embedding models with cache status."""
-        from .embeddings.local import list_available_models, _model_is_cached
-        models = list_available_models()
+        """List available embedding models with cache status and metadata."""
+        from .embeddings.local import list_models_detailed, _model_is_cached
+        models = list_models_detailed()
         current = self._embedding.model_name()
+        lang = params.get("lang", "en")
         result = []
-        for key, (name, dim) in models.items():
-            result.append({
-                "key": key,
-                "name": name,
-                "dimension": dim,
-                "cached": _model_is_cached(name),
-            })
+        for key, info in models.items():
+            entry = info.to_dict()
+            entry["key"] = key
+            entry["cached"] = _model_is_cached(info.name)
+            entry["description"] = info.desc_es if lang == "es" else info.desc_en
+            result.append(entry)
         return {"current": current, "models": result}
+
+    def _handle_model_download(self, params: dict) -> dict:
+        """Download/cache a model without switching to it."""
+        model_key = params.get("model")
+        from .embeddings.local import MODEL_REGISTRY, _model_is_cached
+        if model_key not in MODEL_REGISTRY:
+            raise ValueError(f"Unknown model: {model_key}. Available: {list(MODEL_REGISTRY.keys())}")
+        info = MODEL_REGISTRY[model_key]
+        if _model_is_cached(info.name):
+            return {"status": "already_cached", "model": info.name}
+        logger.info("Downloading model: %s (%d MB)...", info.name, info.size_mb)
+        from sentence_transformers import SentenceTransformer
+        SentenceTransformer(info.name, device="cpu")
+        return {"status": "downloaded", "model": info.name}
 
 
 def serve_stdio(config: dict[str, Any] | None = None) -> None:

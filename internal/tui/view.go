@@ -45,6 +45,8 @@ func (m Model) View() string {
 		b.WriteString(m.viewDetail())
 	case ScreenIndexRepo:
 		b.WriteString(m.viewIndexRepo())
+	case ScreenModels:
+		b.WriteString(m.viewModels())
 	}
 
 	// Status bar
@@ -483,6 +485,80 @@ func isGitRepo(path string) bool {
 
 // ─── Key Help ────────────────────────────────────────────────────────────────
 
+// ─── Models ─────────────────────────────────────────────────────────────────
+
+func (m Model) viewModels() string {
+	var b strings.Builder
+
+	title := "Embedding Models"
+	if m.lang == "es" {
+		title = "Modelos de Embedding"
+	}
+	b.WriteString(styleTitle.Render(title) + "\n\n")
+
+	if m.loading {
+		b.WriteString(m.spinner.View() + " Loading...\n")
+		return b.String()
+	}
+
+	if len(m.modelEntries) == 0 {
+		b.WriteString("No models available.\n")
+		return b.String()
+	}
+
+	for i, entry := range m.modelEntries {
+		// Selection marker
+		selected := i == m.modelIndex
+
+		// Current model marker
+		isCurrent := entry.Name == m.currentModel || entry.Key == m.currentModel
+		prefix := "  "
+		if isCurrent {
+			prefix = "* "
+		}
+
+		// Build model line
+		cacheTag := ""
+		if entry.Cached {
+			cacheTag = styleAccent.Render(" [cached]")
+		}
+
+		qualityStyle := styleResultLine
+		switch entry.Quality {
+		case "best":
+			qualityStyle = styleAccent
+		case "better":
+			qualityStyle = styleResultLanguage
+		}
+
+		header := fmt.Sprintf("%s%-12s  %s  dim=%d  ~%dMB  %s  %s",
+			prefix, entry.Key, entry.Name,
+			entry.Dimension, entry.SizeMB,
+			styleResultScore.Render("speed="+entry.Speed),
+			qualityStyle.Render("quality="+entry.Quality),
+		)
+
+		if selected {
+			b.WriteString(styleListItemSelected.Render("▸ "+header) + cacheTag + "\n")
+			// Show description for selected model
+			if entry.Description != "" {
+				b.WriteString(styleCodePreview.Render(entry.Description) + "\n")
+			}
+		} else {
+			b.WriteString(styleListItem.Render("  "+header) + cacheTag + "\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if m.lang == "es" {
+		b.WriteString(styleStatus.Render("  * = modelo actual  |  d = descargar  |  b = volver") + "\n")
+	} else {
+		b.WriteString(styleStatus.Render("  * = current model  |  d = download  |  b = back") + "\n")
+	}
+
+	return b.String()
+}
+
 func (m Model) viewKeyHelp() string {
 	switch m.screen {
 	case ScreenDashboard:
@@ -521,6 +597,13 @@ func (m Model) viewKeyHelp() string {
 		return styleFooter.Render(
 			keyHelp("enter", "index") + "  " +
 				keyHelp("esc", "back"),
+		)
+	case ScreenModels:
+		return styleFooter.Render(
+			keyHelp("d", "download") + "  " +
+				keyHelp("r", "refresh") + "  " +
+				keyHelp("b", "back") + "  " +
+				keyHelp("q", "quit"),
 		)
 	default:
 		return styleFooter.Render(

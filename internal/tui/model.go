@@ -30,6 +30,7 @@ const (
 	ScreenMemory
 	ScreenDetail
 	ScreenIndexRepo
+	ScreenModels
 )
 
 // ─── Custom Messages ─────────────────────────────────────────────────────────
@@ -73,7 +74,29 @@ type (
 		LatestVersion string
 		IsNewer       bool
 	}
+	modelsLoadedMsg struct {
+		Current string
+		Models  []ModelEntry
+		Error   error
+	}
+	modelActionMsg struct {
+		Action string // "downloaded", "switched", "already_cached"
+		Model  string
+		Error  error
+	}
 )
+
+// ModelEntry holds info about an embedding model for the TUI.
+type ModelEntry struct {
+	Key         string
+	Name        string
+	Dimension   int
+	SizeMB      int
+	Speed       string
+	Quality     string
+	Cached      bool
+	Description string
+}
 
 // ─── Data Types ──────────────────────────────────────────────────────────────
 
@@ -186,16 +209,26 @@ type Model struct {
 	pathSuggestions []string
 	pathSugIndex    int
 
+	// Models
+	modelEntries []ModelEntry
+	modelIndex   int
+	currentModel string
+
 	// State
 	loading       bool
 	spinner       spinner.Model
 	statusMsg     string
 	errorMsg      string
 	latestVersion string // set when a newer version is available
+	lang          string // "en" or "es"
 }
 
 // New creates a new TUI model connected to the given MCP client.
-func New(client *mlclient.StdioClient, version string) Model {
+func New(client *mlclient.StdioClient, version string, lang ...string) Model {
+	l := "en"
+	if len(lang) > 0 && lang[0] != "" {
+		l = lang[0]
+	}
 	si := textinput.New()
 	si.Placeholder = "Search code..."
 	si.CharLimit = 256
@@ -214,19 +247,36 @@ func New(client *mlclient.StdioClient, version string) Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 
-	return Model{
-		client:    client,
-		version:   version,
-		screen:    ScreenDashboard,
-		menuIndex: 0,
-		menuItems: []string{
+	var menuItems []string
+	if l == "es" {
+		menuItems = []string{
+			"Buscar Codigo",
+			"Repositorios",
+			"Ramas",
+			"Memoria",
+			"Historial de Sesion",
+			"Indexar Repositorio",
+			"Modelos de Embedding",
+		}
+	} else {
+		menuItems = []string{
 			"Search Code",
 			"Repositories",
 			"Branches",
 			"Memory",
 			"Session History",
 			"Index Repository",
-		},
+			"Embedding Models",
+		}
+	}
+
+	return Model{
+		client:    client,
+		version:   version,
+		lang:      l,
+		screen:    ScreenDashboard,
+		menuIndex: 0,
+		menuItems: menuItems,
 		searchInput: si,
 		memoryInput: mi,
 		indexInput:  ii,
@@ -246,6 +296,59 @@ func (m Model) Init() tea.Cmd {
 
 
 // ─── Commands (async data loading) ──────────────────────────────────────────
+
+func loadModels(client *mlclient.StdioClient, lang string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := client.Call("model_list", map[string]interface{}{"lang": lang})
+		if err != nil {
+			return modelsLoadedMsg{Error: err}
+		}
+		m, _ := result.(map[string]interface{})
+		current, _ := m["current"].(string)
+		rawModels, _ := m["models"].([]interface{})
+
+		var models []ModelEntry
+		for _, raw := range rawModels {
+			entry, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			dim, _ := entry["dimension"].(float64)
+			sizeMB, _ := entry["size_mb"].(float64)
+			cached, _ := entry["cached"].(bool)
+			models = append(models, ModelEntry{
+				Key:         strVal(entry, "key"),
+				Name:        strVal(entry, "name"),
+				Dimension:   int(dim),
+				SizeMB:      int(sizeMB),
+				Speed:       strVal(entry, "speed"),
+				Quality:     strVal(entry, "quality"),
+				Cached:      cached,
+				Description: strVal(entry, "description"),
+			})
+		}
+		return modelsLoadedMsg{Current: current, Models: models}
+	}
+}
+
+func downloadModel(client *mlclient.StdioClient, modelKey string) tea.Cmd {
+	return func() tea.Msg {
+		result, err := client.Call("model_download", map[string]interface{}{"model": modelKey})
+		if err != nil {
+			return modelActionMsg{Error: err}
+		}
+		m, _ := result.(map[string]interface{})
+		return modelActionMsg{
+			Action: strVal(m, "status"),
+			Model:  strVal(m, "model"),
+		}
+	}
+}
+
+func strVal(m map[string]interface{}, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
 
 func loadDashboard(client *mlclient.StdioClient) tea.Cmd {
 	return func() tea.Msg {

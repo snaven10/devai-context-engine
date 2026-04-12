@@ -33,7 +33,8 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 	defer client.Close()
 
-	model := tui.New(client, "0.1.0")
+	lang := resolvedLang()
+	model := tui.New(client, version, lang)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

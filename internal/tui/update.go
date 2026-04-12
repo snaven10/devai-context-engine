@@ -109,6 +109,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.latestVersion = msg.LatestVersion
 		}
 		return m, nil
+
+	case modelsLoadedMsg:
+		m.loading = false
+		if msg.Error != nil {
+			m.errorMsg = msg.Error.Error()
+		} else {
+			m.modelEntries = msg.Models
+			m.currentModel = msg.Current
+			m.modelIndex = 0
+			m.errorMsg = ""
+		}
+		return m, nil
+
+	case modelActionMsg:
+		m.loading = false
+		if msg.Error != nil {
+			m.errorMsg = msg.Error.Error()
+		} else {
+			if msg.Action == "already_cached" {
+				m.statusMsg = fmt.Sprintf("%s already cached", msg.Model)
+			} else {
+				m.statusMsg = fmt.Sprintf("%s downloaded", msg.Model)
+			}
+			// Reload model list to update cache status
+			return m, loadModels(m.client, m.lang)
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -136,6 +163,45 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDetail(msg)
 	case ScreenIndexRepo:
 		return m.updateIndexRepo(msg)
+	case ScreenModels:
+		return m.updateModels(msg)
+	}
+	return m, nil
+}
+
+// ─── Models ─────────────────────────────────────────────────────────────────
+
+func (m Model) updateModels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		return m, tea.Quit
+	case "b", "esc":
+		m.screen = ScreenDashboard
+		m.statusMsg = ""
+		m.errorMsg = ""
+		return m, nil
+	case "j", "down":
+		if m.modelIndex < len(m.modelEntries)-1 {
+			m.modelIndex++
+		}
+	case "k", "up":
+		if m.modelIndex > 0 {
+			m.modelIndex--
+		}
+	case "d": // Download
+		if m.modelIndex < len(m.modelEntries) {
+			entry := m.modelEntries[m.modelIndex]
+			if entry.Cached {
+				m.statusMsg = entry.Name + " already cached"
+				return m, nil
+			}
+			m.loading = true
+			m.statusMsg = "Downloading " + entry.Name + "..."
+			return m, downloadModel(m.client, entry.Key)
+		}
+	case "r": // Refresh
+		m.loading = true
+		return m, loadModels(m.client, m.lang)
 	}
 	return m, nil
 }
@@ -218,6 +284,11 @@ func (m Model) selectMenuItem() (tea.Model, tea.Cmd) {
 		m.indexInput.Focus()
 		m.indexInput.SetValue("")
 		return m, textinput.Blink
+	case 6: // Embedding Models
+		m.prevScreen = m.screen
+		m.screen = ScreenModels
+		m.loading = true
+		return m, loadModels(m.client, m.lang)
 	}
 	return m, nil
 }
