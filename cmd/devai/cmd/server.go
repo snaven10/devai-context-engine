@@ -50,10 +50,22 @@ func init() {
 	rootCmd.AddCommand(serverCmd)
 }
 
-// resolvedStorageConfig loads .devai/config.yaml and merges with env var overrides,
+// resolvedStorageConfig loads project config and merges with env var overrides,
 // returning the project config and KEY=VALUE pairs ready to propagate to the ML sidecar.
+// Uses --config flag if provided, otherwise auto-detects .devai/config.yaml from CWD.
 func resolvedStorageConfig() (*config.ProjectConfig, []string, error) {
-	projectCfg, _ := config.LoadConfigFromCWD()
+	var projectCfg config.ProjectConfig
+	var err error
+
+	if cfgFile != "" {
+		projectCfg, err = config.LoadConfig(cfgFile)
+		if err != nil {
+			return nil, nil, fmt.Errorf("loading config %s: %w", cfgFile, err)
+		}
+	} else {
+		projectCfg, _ = config.LoadConfigFromCWD()
+	}
+
 	router, err := storage.NewFromConfigWithEnvOverride(projectCfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolving storage config: %w", err)
