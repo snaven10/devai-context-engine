@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from .base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 

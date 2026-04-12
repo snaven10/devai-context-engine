@@ -6,9 +6,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..chunking.semantic_chunker import CodeChunk, SemanticChunker
+from ..chunking.semantic_chunker import SemanticChunker
 from ..embeddings.base import EmbeddingProvider
-from ..parsers.base import ParseResult
 from ..parsers.registry import ParserRegistry
 from ..stores.graph_store import SQLiteGraphStore, StoredEdge
 from ..stores.index_state import FileRecord, IndexRecord, IndexStateStore

@@ -19,7 +19,7 @@ from devai_ml.stores.qdrant_store import (
     PAYLOAD_FIELDS,
     QdrantVectorStore,
 )
-from devai_ml.stores.vector_store import SearchResult, VectorPoint
+from devai_ml.stores.vector_store import VectorPoint
 
 QDRANT_URL = "localhost"
 QDRANT_PORT = 6334

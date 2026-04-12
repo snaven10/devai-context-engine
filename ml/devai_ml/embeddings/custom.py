@@ -4,7 +4,6 @@ import json
 import logging
 import urllib.request
 
-from .base import EmbeddingProvider
 
 logger = logging.getLogger(__name__)
 

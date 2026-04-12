@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-import pytest
 
 from devai_ml.stores.graph_store import SQLiteGraphStore, StoredEdge
 from devai_ml.stores.index_state import IndexStateStore, IndexRecord, FileRecord

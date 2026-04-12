@@ -9,14 +9,12 @@ from typing import Any
 
 from .chunking.semantic_chunker import SemanticChunker
 from .embeddings.factory import create_provider
-from .embeddings.base import EmbeddingProvider
 from .parsers.registry import ParserRegistry
 from .pipeline.orchestrator import IndexPipeline
-from .stores.factory import StorageConfig, create_storage_config_from_env, create_vector_store
+from .stores.factory import create_storage_config_from_env, create_vector_store
 from .stores.graph_store import SQLiteGraphStore
 from .stores.index_state import IndexStateStore
 from .stores.memory_store import Memory, MemoryStore
-from .stores.vector_store import LanceDBVectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +220,7 @@ class MLService:
         """Parse a file and return symbols, imports, edges."""
         file_path = params.get("file_path", "")
         content = params.get("content")
-        language = params.get("language")
+        _language = params.get("language")  # reserved for future use
 
         if content:
             parser = self._parser_registry.get_parser(file_path)
@@ -299,7 +297,7 @@ class MLService:
         """Find a symbol by name using vector search, then return its code."""
         name = params["name"]
         branch = params.get("branch")
-        repo = params.get("repo")
+        _repo = params.get("repo")  # reserved for multi-repo filtering
 
         # Search for the symbol in vectors
         vector = self._embedding.embed_single(name)
@@ -527,7 +525,7 @@ class MLService:
         query = params["query"]
         scope = params.get("scope")
         mem_type = params.get("type")
-        project = params.get("project", "")
+        _project = params.get("project", "")  # reserved for multi-project filtering
         limit = int(params.get("limit", 10))
 
         # Semantic search via vector store

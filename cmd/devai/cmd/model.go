@@ -103,9 +103,11 @@ func runModelList(cmd *cobra.Command, args []string) error {
 	models, _ := m["models"].([]interface{})
 
 	if lang == "es" {
-		fmt.Println("Modelos de embedding disponibles:\n")
+		fmt.Println("Modelos de embedding disponibles:")
+		fmt.Println()
 	} else {
-		fmt.Println("Available embedding models:\n")
+		fmt.Println("Available embedding models:")
+		fmt.Println()
 	}
 
 	for _, model := range models {

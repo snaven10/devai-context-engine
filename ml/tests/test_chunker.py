@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pytest
 from devai_ml.parsers.base import Symbol, Import, ParseResult
 from devai_ml.chunking.semantic_chunker import SemanticChunker, CodeChunk
 

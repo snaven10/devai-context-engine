@@ -8,7 +8,6 @@ resolution (last-write-wins by indexed_at), and additive-only sync.
 
 from __future__ import annotations
 
-import sys
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 

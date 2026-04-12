@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from devai_ml.parsers.base import Symbol, Import, Export, GraphEdge, ParseResult
+from devai_ml.parsers.base import Symbol, Import, GraphEdge, ParseResult
 
 
 class TestSymbol:

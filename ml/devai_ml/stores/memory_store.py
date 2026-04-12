@@ -4,7 +4,7 @@ import hashlib
 import logging
 import sqlite3
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 

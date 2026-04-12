@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .base import Import, LanguageParser, ParseResult, Symbol
+from .base import ParseResult, Symbol
 
 
 class RawTextParser:

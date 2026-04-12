@@ -6,10 +6,8 @@ flush_retry_queue, health_status, search fallback, delete_collection.
 
 from __future__ import annotations
 
-import threading
-from unittest.mock import MagicMock, Mock, patch, call
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 from devai_ml.stores.hybrid_store import HybridVectorStore
 from devai_ml.stores.vector_store import SearchResult, VectorPoint

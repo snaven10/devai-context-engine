@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from .base import Export, GraphEdge, Import, LanguageParser, ParseResult, Symbol
+from .base import Export, GraphEdge, Import, ParseResult, Symbol
 
 logger = logging.getLogger(__name__)
 
