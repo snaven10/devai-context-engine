@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -256,6 +257,11 @@ func upgradeFromBinary(url, tag string) error {
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
 
+	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("saving download: %w", err)
+	}
+
 	fmt.Println("Extracting...")
 
 	// Get install path
@@ -266,11 +272,12 @@ func upgradeFromBinary(url, tag string) error {
 	// Extract tar.gz (binary should be at top level)
 	tmpFile.Close()
 
-	// Use tar command for simplicity
-	extractCmd := exec.Command("tar", "xzf", tmpPath, "-C", filepath.Dir(binPath))
+	// Extract only the devai binary from the archive
+	extractCmd := exec.Command("tar", "xzf", tmpPath, "-C", filepath.Dir(binPath), "devai")
 	if err := extractCmd.Run(); err != nil {
 		return fmt.Errorf("extracting binary: %w", err)
 	}
+	os.Chmod(binPath, 0o755)
 
 	fmt.Printf("Upgraded to %s\n", tag)
 	return nil
