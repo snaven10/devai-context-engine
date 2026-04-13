@@ -26,6 +26,7 @@ type StdioClient struct {
 	quiet     bool                // suppress stderr forwarding (for MCP mode)
 	extraEnv  []string            // additional env vars for the ML process ("KEY=VALUE")
 	stateDir  string              // state directory to pass to ML process (--state-dir)
+	model     string              // embedding model key to pass to ML process (--model)
 	projectCfg *config.ProjectConfig // optional project config for python resolution
 }
 
@@ -53,6 +54,9 @@ func WithConfig(cfg *config.ProjectConfig) Option {
 		c.projectCfg = cfg
 		if cfg != nil && cfg.StateDir != "" && c.stateDir == "" {
 			c.stateDir = cfg.StateDir
+		}
+		if cfg != nil && cfg.Embeddings.Model != "" && c.model == "" {
+			c.model = cfg.Embeddings.Model
 		}
 	}
 }
@@ -96,6 +100,9 @@ func NewStdioClient(opts ...Option) (*StdioClient, error) {
 	args := []string{"-m", "devai_ml.server"}
 	if client.stateDir != "" {
 		args = append(args, "--state-dir", client.stateDir)
+	}
+	if client.model != "" {
+		args = append(args, "--model", client.model)
 	}
 	cmd := exec.Command(pythonBin, args...)
 	client.cmd = cmd
