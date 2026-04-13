@@ -52,6 +52,15 @@ NODE_KIND_MAP: dict[str, dict[str, str]] = {
         "trait_item": "interface",
         "type_item": "type_alias",
     },
+    "php": {
+        "class_declaration": "class",
+        "interface_declaration": "interface",
+        "trait_declaration": "interface",
+        "method_declaration": "method",
+        "function_definition": "function",
+        "enum_declaration": "enum",
+        "property_declaration": "variable",
+    },
 }
 
 
@@ -70,6 +79,7 @@ class TreeSitterLanguageParser:
         "go": "tree_sitter_go",
         "java": "tree_sitter_java",
         "rust": "tree_sitter_rust",
+        "php": "tree_sitter_php",
     }
 
     def __init__(self, language: str) -> None:
@@ -95,6 +105,9 @@ class TreeSitterLanguageParser:
         if language == "typescript":
             # tree_sitter_typescript exposes .language_typescript() and .language_tsx()
             self._ts_lang = tree_sitter.Language(mod.language_typescript())
+        elif language == "php":
+            # tree_sitter_php exposes .language_php() (not .language())
+            self._ts_lang = tree_sitter.Language(mod.language_php())
         else:
             self._ts_lang = tree_sitter.Language(mod.language())
 
@@ -445,6 +458,7 @@ class TreeSitterLanguageParser:
             "rust": ("use_declaration",),
             "c": ("preproc_include",),
             "cpp": ("preproc_include",),
+            "php": ("namespace_use_declaration",),
         }
         types_to_check = import_node_types.get(self._language, ())
 
@@ -541,6 +555,11 @@ class TreeSitterLanguageParser:
             start = text.index('"') + 1
             end = text.index('"', start)
             return text[start:end]
+        # PHP: use App\Models\User
+        if text.startswith("use "):
+            parts = text.split()
+            if len(parts) >= 2:
+                return parts[1].rstrip(",").rstrip(" as").split(" as ")[0]
         # C/C++: #include <file> or #include "file"
         if text.startswith("#include"):
             for delim_start, delim_end in [("<", ">"), ('"', '"')]:
