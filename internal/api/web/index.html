@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>DevAI — Code Graph &amp; Memory Browser</title>
+<script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+<script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
+<script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
+<script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --line: #21262d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #2f81f7;
+    --calls: #f78166;
+    --imports: #58a6ff;
+    --dim: #232830;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif; font-size: 13px; }
+  header { padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line);
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 13px; letter-spacing: .5px; color: var(--muted); }
+  header .group { display: flex; gap: 4px; align-items: center; }
+  label { color: var(--muted); font-size: 11px; }
+  select, input, button { background: #0d1117; color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+  button { background: var(--accent); border-color: var(--accent); color: #fff; cursor: pointer; }
+  button.secondary { background: transparent; border-color: var(--line); color: var(--text); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; max-width: 420px; }
+  .chip { font-size: 11px; padding: 3px 10px; border-radius: 12px;
+    background: #1a1f29; color: var(--muted); border: 1px solid var(--line);
+    cursor: pointer; user-select: none; transition: all 80ms; }
+  .chip:hover { border-color: var(--accent); color: var(--text); }
+  .chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .chip .count { opacity: .6; font-size: 10px; margin-left: 4px; }
+  .mini { font-size: 10px; padding: 2px 8px; background: transparent;
+    color: var(--muted); border: 1px solid var(--line); border-radius: 4px; cursor: pointer; }
+  .mini:hover { color: var(--text); border-color: var(--accent); }
+  input[type=checkbox] { width: auto; }
+  main { display: grid; grid-template-columns: 1fr 340px; height: calc(100vh - 90px); }
+  #cy { background: #0d1117; }
+  aside { border-left: 1px solid var(--line); background: var(--panel); overflow-y: auto;
+    padding: 12px; font-size: 12px; }
+  aside h2 { font-size: 11px; margin: 12px 0 6px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .5px; }
+  aside .row { padding: 6px 8px; border-radius: 4px; margin-bottom: 4px;
+    background: #0d1117; cursor: pointer; word-break: break-all; border: 1px solid transparent; }
+  aside .row:hover { background: #1a2030; border-color: var(--accent); }
+  aside .row .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .stat { color: var(--muted); font-size: 11px; }
+  .pill { display: inline-block; padding: 1px 6px; border-radius: 10px;
+    background: #21262d; color: var(--muted); font-size: 10px; margin-left: 4px; }
+  .pill.calls { background: rgba(247,129,102,.18); color: var(--calls); }
+  .pill.imports { background: rgba(88,166,255,.18); color: var(--imports); }
+  /* Memory-link source pills: green = exact file path, blue = symbol named in content, yellow = fuzzy vector match */
+  .pill.src-files    { background: rgba(63,185,80,.18);  color: #3fb950; }
+  .pill.src-mention  { background: rgba(88,166,255,.18); color: #58a6ff; }
+  .pill.src-vector   { background: rgba(234,179,8,.20);  color: #facc15; }
+  .err { color: #f85149; padding: 8px; font-family: monospace; font-size: 11px; }
+  #search { width: 100%; margin-bottom: 4px; }
+  .tabbar { display: flex; gap: 4px; margin-bottom: 8px; }
+  .tabbar button { background: transparent; border: 1px solid var(--line);
+    color: var(--muted); font-size: 11px; padding: 3px 8px; }
+  .tabbar button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .toolbar2 { padding: 6px 14px; background: var(--bg); border-bottom: 1px solid var(--line);
+    display: flex; gap: 16px; align-items: center; font-size: 11px; color: var(--muted); }
+  kbd { background: #21262d; padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>devai · graph</h1>
+  <div class="group">
+    <label>repos</label>
+    <input id="repoFilter" type="search" placeholder="filter…" style="width: 110px" />
+    <div id="repos" class="chips"></div>
+    <button id="repoAll" class="mini" type="button" title="select all visible">all</button>
+    <button id="repoNone" class="mini" type="button" title="deselect all visible">none</button>
+  </div>
+  <div class="group">
+    <label for="branch">branch</label>
+    <select id="branch"></select>
+  </div>
+  <div class="group">
+    <label for="kind">kind</label>
+    <select id="kind">
+      <option value="">all</option>
+      <option value="calls">calls</option>
+      <option value="imports">imports</option>
+    </select>
+  </div>
+  <div class="group">
+    <label><input type="checkbox" id="hideExt" checked /> hide ext</label>
+    <label title="placeholder symbols the indexer emits for file-level code; off by default because in Java it nukes most nodes"><input type="checkbox" id="hideSyn" /> hide &lt;unknown&gt;</label>
+    <label><input type="checkbox" id="groupFile" checked /> group by file</label>
+  </div>
+  <div class="group">
+    <label for="limit">limit</label>
+    <input id="limit" type="number" min="50" max="2000" step="50" value="80" style="width: 70px" />
+  </div>
+  <div class="group">
+    <label for="file">file ~</label>
+    <input id="file" type="text" placeholder="(opt) path substring" style="width: 160px" />
+  </div>
+  <button id="loadBulk">load slice</button>
+  <button id="clear" class="secondary">clear</button>
+  <span id="stat" class="stat"></span>
+</header>
+
+<div class="toolbar2">
+  <span><strong>click-to-explore:</strong> click a symbol in the search panel → graph shows its callers + callees · click any node to expand from there · <kbd>Esc</kbd> clears selection</span>
+</div>
+
+<main>
+  <div id="cy"></div>
+  <aside>
+    <div class="tabbar">
+      <button id="tab-explore" class="active">explore</button>
+      <button id="tab-memories">memories</button>
+    </div>
+
+    <div id="pane-explore">
+      <input id="search" type="text" placeholder="search symbol name…  (try: handleLogin, UserService)" />
+      <button id="searchGo" style="width:100%; margin-bottom: 8px">find symbols</button>
+      <h2 id="searchHeader">matches</h2>
+      <div id="searchList" class="stat">type a symbol name above</div>
+
+      <h2>selected node</h2>
+      <div id="nodeInfo" class="stat">click any node in the graph</div>
+
+      <h2>memories about this symbol</h2>
+      <div id="relatedList" class="stat">click any node to see related memories</div>
+    </div>
+
+    <div id="pane-memories" style="display:none">
+      <input id="memSearch" type="text" placeholder="semantic query…  (empty = recent)" />
+      <button id="memGo" style="width:100%">search</button>
+      <h2 id="memHeader">recent</h2>
+      <div id="memList"></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let cy = null;
+let cyData = { nodes: [], edges: [] }; // canonical store with full IDs
+let heatmap = {};                       // fullSymbolId -> memoryCount
+let idMap = new Map();                  // fullId -> safe nXX
+const safeId = (orig) => {
+  if (!idMap.has(orig)) idMap.set(orig, 'n' + idMap.size);
+  return idMap.get(orig);
+};
+const fullById = new Map(); // safe id -> fullId
+const setSafe = (orig) => {
+  const s = safeId(orig);
+  fullById.set(s, orig);
+  return s;
+};
+
+// Register fcose extension. cytoscape-fcose UMD exposes window.cytoscapeFcose
+// on most builds; some bundlers expose `cytoscape.fcose` instead. Try both.
+(function registerFcose() {
+  const candidates = [window.cytoscapeFcose, window.cytoscapeFcose && window.cytoscapeFcose.default];
+  for (const c of candidates) {
+    if (typeof c === 'function') { try { cytoscape.use(c); return; } catch (_) {} }
+  }
+  console.warn('fcose extension not registered; falling back to cose');
+})();
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText} — ${url}`);
+  return r.json();
+}
+
+async function loadRepos() {
+  try {
+    const data = await getJSON('/api/v1/graph/repos');
+    const rows = data.repos || [];
+    const byRepo = {};
+    const repoTotals = {};
+    rows.forEach(r => {
+      if (!byRepo[r.repo]) byRepo[r.repo] = [];
+      byRepo[r.repo].push({ branch: r.branch, edges: r.edges });
+      repoTotals[r.repo] = (repoTotals[r.repo] || 0) + r.edges;
+    });
+    const container = $('repos');
+    container.innerHTML = '';
+    const repoNames = Object.keys(byRepo).sort((a, b) => repoTotals[b] - repoTotals[a]);
+    repoNames.forEach((r, i) => {
+      const chip = document.createElement('div');
+      chip.className = 'chip' + (i === 0 ? ' active' : '');
+      chip.dataset.repo = r;
+      chip.innerHTML = `${escapeHTML(r || '(unnamed)')}<span class="count">${repoTotals[r]}</span>`;
+      chip.addEventListener('click', () => { chip.classList.toggle('active'); syncBranches(); });
+      container.appendChild(chip);
+    });
+    container.dataset.tree = JSON.stringify(byRepo);
+    syncBranches();
+  } catch (e) { showErr('loadRepos: ' + e.message); }
+}
+
+function selectedRepos() {
+  return Array.from($('repos').querySelectorAll('.chip.active')).map(c => c.dataset.repo);
+}
+
+function syncBranches() {
+  const tree = JSON.parse($('repos').dataset.tree || '{}');
+  const repos = selectedRepos();
+  const branchEdges = {};
+  repos.forEach(r => (tree[r] || []).forEach(b => {
+    branchEdges[b.branch] = (branchEdges[b.branch] || 0) + b.edges;
+  }));
+  const branchSel = $('branch');
+  const prev = branchSel.value;
+  branchSel.innerHTML = '';
+  Object.keys(branchEdges).sort((a, b) => branchEdges[b] - branchEdges[a]).forEach(b => {
+    const opt = document.createElement('option');
+    opt.value = b; opt.textContent = `${b} (${branchEdges[b]})`;
+    branchSel.appendChild(opt);
+  });
+  if (prev && branchEdges[prev]) branchSel.value = prev;
+}
+
+async function loadBulk() {
+  const repos = selectedRepos();
+  const branch = $('branch').value;
+  if (!repos.length || !branch) { showErr('pick at least 1 repo + branch'); return; }
+  $('loadBulk').disabled = true; $('stat').textContent = 'loading…';
+  try {
+    const qs = new URLSearchParams({
+      branch, kind: $('kind').value,
+      limit: $('limit').value || 80,
+      hide_external: $('hideExt').checked ? '1' : '0',
+      hide_synthetic: $('hideSyn').checked ? '1' : '0',
+    });
+    if ($('file').value.trim()) qs.set('file', $('file').value.trim());
+    const data = await getJSON(`/api/v1/graph/${encodeURIComponent(repos.join(','))}?${qs}`);
+    await loadHeatmap();
+    mergeGraph(data, /*replace*/ true);
+  } catch (e) { showErr(e.message); }
+  finally { $('loadBulk').disabled = false; }
+}
+
+async function exploreSymbol(symbol) {
+  const branch = $('branch').value;
+  if (!branch) { showErr('pick a branch first'); return; }
+  $('stat').textContent = `loading ${symbol}…`;
+  try {
+    const qs = new URLSearchParams({
+      branch, symbol,
+      hide_external: $('hideExt').checked ? '1' : '0',
+      hide_synthetic: $('hideSyn').checked ? '1' : '0',
+    });
+    const repos = selectedRepos();
+    if (repos.length) qs.set('repo', repos.join(','));
+    const kind = $('kind').value;
+    if (kind) qs.set('kind', kind);
+    const data = await getJSON(`/api/v1/graph/symbol?${qs}`);
+    if (!Object.keys(heatmap).length) await loadHeatmap();
+    mergeGraph(data, /*replace*/ false);
+    const safe = safeId(symbol);
+    if (cy.getElementById(safe).length) {
+      const node = cy.getElementById(safe);
+      cy.$(':selected').unselect();
+      node.select();
+      cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1.2) }, { duration: 400 });
+      // Manually trigger what a user click would do:
+      highlightNeighborhood(node);
+      showNodeInfo(node);
+      loadRelatedMemories(symbol);
+    }
+  } catch (e) { showErr(e.message); }
+}
+
+// Click handler for memory rows: load the subgraph of symbols this memory
+// references, switch to the explore tab, and highlight the first one.
+async function exploreMemory(memoryId) {
+  if (!memoryId) return;
+  const branch = $('branch').value;
+  if (!branch) { showErr('pick a branch first (header)'); return; }
+  $('stat').textContent = `loading memory #${memoryId}…`;
+  try {
+    const qs = new URLSearchParams({
+      branch,
+      hide_external: $('hideExt').checked ? '1' : '0',
+      hide_synthetic: $('hideSyn').checked ? '1' : '0',
+    });
+    const data = await getJSON(`/api/v1/memory/${memoryId}/graph?${qs}`);
+    if ((data.nodes || []).length === 0) {
+      $('stat').innerHTML = '<span class="err">this memory has no symbol-level refs (file-level only or unmatched)</span>';
+      return;
+    }
+    if (!Object.keys(heatmap).length) await loadHeatmap();
+    mergeGraph(data, /*replace*/ true);   // replace = focused view of this memory
+    showPane('explore');
+    // Pick the first target symbol that's in the graph and select it
+    const targets = (data.target_symbols || []).map(safeId);
+    const firstAlive = targets.find(t => cy.getElementById(t).length > 0);
+    if (firstAlive) {
+      const node = cy.getElementById(firstAlive);
+      node.select();
+      cy.animate({ center: { eles: node }, zoom: 1.2, fit: { eles: cy.elements(), padding: 30 } }, { duration: 400 });
+      highlightNeighborhood(node);
+      showNodeInfo(node);
+      loadRelatedMemories(node.data('fullId'));
+    }
+    $('stat').textContent = `${cyData.nodes.length} nodes · ${cyData.edges.length} edges (focused on memory #${memoryId})`;
+  } catch (e) { showErr(e.message); }
+}
+
+function mergeGraph(data, replace) {
+  if (replace || !cy) {
+    idMap = new Map();
+    fullById.clear();
+    cyData = { nodes: [], edges: [] };
+  }
+
+  // Convert incoming full-IDed payload to safe-IDed elements, deduping.
+  const existingNodeIds = new Set(cyData.nodes.map(n => n.data.id));
+  const existingEdgeKeys = new Set(cyData.edges.map(e => e.data.source + '→' + e.data.target + ':' + e.data.kind));
+
+  data.nodes.forEach(n => {
+    const sid = setSafe(n.data.id);
+    if (!existingNodeIds.has(sid)) {
+      cyData.nodes.push({ data: {
+        id: sid, label: n.data.label, fullId: n.data.id,
+        repo: n.data.repo, external: n.data.external, file: n.data.file || '',
+        memoryCount: heatmap[n.data.id] || 0,
+      }});
+      existingNodeIds.add(sid);
+    }
+  });
+  data.edges.forEach((e, i) => {
+    const s = setSafe(e.data.source);
+    const t = setSafe(e.data.target);
+    const key = s + '→' + t + ':' + e.data.kind;
+    if (!existingEdgeKeys.has(key)) {
+      cyData.edges.push({ data: { id: 'e' + cyData.edges.length, source: s, target: t, kind: e.data.kind, file: e.data.file, line: e.data.line } });
+      existingEdgeKeys.add(key);
+    }
+  });
+
+  renderGraph();
+  $('stat').textContent = `${cyData.nodes.length} nodes · ${cyData.edges.length} edges`;
+}
+
+function renderGraph() {
+  if (cy) cy.destroy();
+
+  // Build elements. If `group by file` is on, inject compound parent nodes
+  // and assign `parent` to every node that has a known file.
+  const groupByFile = $('groupFile').checked;
+  let nodes = cyData.nodes;
+  if (groupByFile) {
+    const fileSet = new Set();
+    cyData.nodes.forEach(n => { if (n.data.file) fileSet.add(n.data.file); });
+    const parents = Array.from(fileSet).map(f => ({
+      data: { id: 'file::' + f, label: shortPath(f), isFile: true },
+    }));
+    const children = cyData.nodes.map(n => n.data.file
+      ? { data: { ...n.data, parent: 'file::' + n.data.file } }
+      : n);
+    nodes = parents.concat(children);
+  }
+
+  cy = cytoscape({
+    container: $('cy'),
+    elements: { nodes, edges: cyData.edges },
+    wheelSensitivity: 0.25,
+    style: [
+      { selector: 'node', style: {
+        'background-color': '#2f81f7', 'label': 'data(label)',
+        'color': '#e6edf3', 'font-size': 10, 'text-valign': 'center',
+        'text-halign': 'right', 'text-margin-x': 4,
+        'width': 14, 'height': 14,
+      }},
+      { selector: 'node[?isFile]', style: {
+        'shape': 'round-rectangle', 'background-color': '#161b22',
+        'background-opacity': 0.6, 'border-color': '#30363d', 'border-width': 1,
+        'label': 'data(label)', 'color': '#8b949e', 'font-size': 11, 'font-weight': 'bold',
+        'text-valign': 'top', 'text-halign': 'center', 'text-margin-y': -6,
+        'padding': 14,
+      }},
+      { selector: 'node[?external]', style: { 'background-color': '#586069', 'shape': 'diamond' }},
+      { selector: 'node[memoryCount > 0]', style: {
+        'border-color': '#facc15', 'border-width': 2,
+        'background-color': '#eab308',
+      }},
+      { selector: 'node[memoryCount > 2]', style: {
+        'border-width': 3, 'shadow-blur': 12, 'shadow-color': '#facc15',
+        'shadow-opacity': 0.7, 'shadow-offset-x': 0, 'shadow-offset-y': 0,
+      }},
+      { selector: 'node.faded',      style: { 'opacity': 0.15 }},
+      { selector: 'node:selected',   style: { 'background-color': '#f78166', 'border-color': '#fff', 'border-width': 2, 'width': 22, 'height': 22 }},
+      { selector: 'node.neighbor',   style: { 'background-color': '#58a6ff', 'border-color': '#fff', 'border-width': 1.5 }},
+      { selector: 'edge', style: {
+        'width': 1, 'line-color': '#30363d', 'target-arrow-color': '#30363d',
+        'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': .7,
+      }},
+      { selector: 'edge[kind = "calls"]',   style: { 'line-color': '#f78166', 'target-arrow-color': '#f78166' }},
+      { selector: 'edge[kind = "imports"]', style: { 'line-color': '#58a6ff', 'target-arrow-color': '#58a6ff' }},
+      { selector: 'edge.faded',      style: { 'opacity': 0.05 }},
+      { selector: 'edge.highlighted',style: { 'width': 2.5 }},
+    ],
+    layout: pickLayout(),
+  });
+
+  cy.on('tap', 'node', evt => {
+    const n = evt.target;
+    highlightNeighborhood(n);
+    showNodeInfo(n);
+    if (!n.data('isFile')) loadRelatedMemories(n.data('fullId'));
+  });
+  cy.on('dblclick', 'node', evt => {
+    const full = evt.target.data('fullId');
+    if (full) exploreSymbol(full);
+  });
+  cy.on('tap', evt => { if (evt.target === cy) clearHighlight(); });
+
+  // Keyboard: Esc clears highlight
+  document.addEventListener('keydown', escHandler);
+}
+
+function pickLayout() {
+  const base = { animate: false, fit: true, padding: 40 };
+  const grouped = $('groupFile').checked;
+  const hasFcose = !!(window.cytoscapeFcose);
+  if (hasFcose) {
+    return { ...base, name: 'fcose',
+      quality: 'default',
+      nodeSeparation: grouped ? 100 : 130,
+      idealEdgeLength: grouped ? 70 : 110,
+      nodeRepulsion: grouped ? 8000 : 15000,
+      edgeElasticity: 0.45,
+      gravity: 0.08,
+      gravityRangeCompound: 1.5,
+      gravityCompound: 1.0,
+      numIter: 2500,
+      packComponents: true,
+      tile: true,
+    };
+  }
+  return { ...base, name: 'cose',
+    nodeRepulsion: () => 12000, idealEdgeLength: () => 110,
+    numIter: 2000, nodeOverlap: 20, gravity: 0.1,
+  };
+}
+
+function shortPath(p) {
+  if (!p) return '';
+  const parts = p.split('/');
+  if (parts.length <= 2) return p;
+  return '…/' + parts.slice(-2).join('/');
+}
+
+function highlightNeighborhood(node) {
+  const nhood = node.closedNeighborhood();
+  cy.elements().addClass('faded');
+  nhood.removeClass('faded').addClass('neighbor');
+  node.removeClass('neighbor');                  // selected has its own style
+  nhood.connectedEdges().removeClass('faded').addClass('highlighted');
+}
+function clearHighlight() {
+  if (!cy) return;
+  cy.$(':selected').unselect();
+  cy.elements().removeClass('faded neighbor highlighted');
+  $('nodeInfo').innerHTML = '<span class="stat">click any node in the graph</span>';
+}
+function escHandler(e) { if (e.key === 'Escape') clearHighlight(); }
+
+async function loadHeatmap() {
+  const repos = selectedRepos();
+  const branch = $('branch').value;
+  const qs = new URLSearchParams();
+  if (repos.length === 1) qs.set('repo', repos[0]);  // heatmap is single-repo for now
+  if (branch) qs.set('branch', branch);
+  try {
+    const data = await getJSON('/api/v1/memory/heatmap?' + qs);
+    heatmap = data.counts || {};
+    // Update any nodes already in the graph
+    if (cy) {
+      Object.keys(heatmap).forEach(fullId => {
+        const safe = idMap.get(fullId);
+        if (safe) {
+          const node = cy.getElementById(safe);
+          if (node.length) node.data('memoryCount', heatmap[fullId]);
+        }
+      });
+    }
+  } catch (e) {
+    console.warn('heatmap load failed:', e.message);
+  }
+}
+
+async function loadRelatedMemories(fullSymbol) {
+  if (!fullSymbol) return;
+  const memList = $('relatedList');
+  if (!memList) return;
+  memList.innerHTML = '<div class="stat">loading…</div>';
+  const qs = new URLSearchParams({ symbol: fullSymbol, limit: '10' });
+  const branch = $('branch').value;
+  if (branch) qs.set('branch', branch);
+  try {
+    const data = await getJSON('/api/v1/memory/by-symbol?' + qs);
+    const mems = data.memories || [];
+    if (!mems.length) { memList.innerHTML = '<div class="stat">(no memories reference this symbol yet)</div>'; return; }
+    memList.innerHTML = mems.map(m => `
+      <div class="row" data-memory-id="${m.id}" title="click to load this memory's subgraph · topic: ${(m.topic_key||'').replace(/"/g,'&quot;')}">
+        <div><strong>${escapeHTML(m.title || '(untitled)')}</strong>${linkBadge(m.link_sources)}</div>
+        <div class="meta">${m.type || ''} · ${m.scope || ''} · ${shortDate(m.updated_at)}</div>
+        <div class="meta" style="margin-top:4px">${escapeHTML((m.content || '').slice(0, 140))}…</div>
+      </div>`).join('');
+    memList.querySelectorAll('.row[data-memory-id]').forEach(el => {
+      el.addEventListener('click', () => exploreMemory(Number(el.dataset.memoryId)));
+    });
+  } catch (e) { memList.innerHTML = `<div class="err">${e.message}</div>`; }
+}
+
+// linkBadge picks the strongest link source and renders a colored pill.
+// Precedence: files-field > content-mention > vector-similarity.
+function linkBadge(sourcesCsv) {
+  if (!sourcesCsv) return '';
+  const set = new Set(sourcesCsv.split(','));
+  if (set.has('files-field'))      return ` <span class="pill src-files"   title="Linked because the file path appears in the memory's files field">exact file</span>`;
+  if (set.has('content-mention'))  return ` <span class="pill src-mention" title="Linked because the symbol name appears in the memory's content">named in content</span>`;
+  if (set.has('vector-similarity'))return ` <span class="pill src-vector"  title="Linked via embedding similarity (fuzzy match — may not be precise)">fuzzy match</span>`;
+  return '';
+}
+
+function showNodeInfo(n) {
+  const inc = n.indegree(), out = n.outdegree();
+  const incBy = {};
+  n.incomers('edge').forEach(e => { incBy[e.data('kind')] = (incBy[e.data('kind')] || 0) + 1; });
+  const outBy = {};
+  n.outgoers('edge').forEach(e => { outBy[e.data('kind')] = (outBy[e.data('kind')] || 0) + 1; });
+  const pill = (k, n) => `<span class="pill ${k}">${k}: ${n}</span>`;
+  $('nodeInfo').innerHTML =
+    `<div><strong>${escapeHTML(n.data('label'))}</strong></div>` +
+    `<div class="meta">${escapeHTML(n.data('fullId') || n.id())}</div>` +
+    `<div class="meta" style="margin-top:6px">repo: ${escapeHTML(n.data('repo') || '?')}</div>` +
+    `<div style="margin-top:6px">` +
+      `<span class="pill">in: ${inc}</span><span class="pill">out: ${out}</span>` +
+      Object.entries(incBy).map(([k,n]) => pill(k+' in', n)).join('') +
+      Object.entries(outBy).map(([k,n]) => pill(k+' out', n)).join('') +
+    `</div>` +
+    `<div class="meta" style="margin-top:8px">double-click to expand · click "impact" below to trace blast radius</div>` +
+    `<div id="impactBox" style="margin-top:8px">
+       <button id="impactBtn" class="mini" style="font-size:11px">analyze impact (depth 3)</button>
+       <div id="impactResult" class="stat" style="margin-top:6px"></div>
+     </div>`;
+  const btn = $('impactBtn');
+  if (btn) btn.addEventListener('click', () => loadImpact(n.data('fullId'), n.data('repo')));
+}
+
+async function loadImpact(fullSymbol, repo) {
+  const branch = $('branch').value;
+  if (!fullSymbol || !branch) { $('impactResult').textContent = 'need a symbol and a branch'; return; }
+  $('impactResult').textContent = 'analyzing…';
+  try {
+    const qs = new URLSearchParams({ symbol: fullSymbol, branch, depth: '3', kind: 'calls' });
+    if (repo) qs.set('repo', repo);
+    const r = await getJSON('/api/v1/graph/impact?' + qs);
+    if (r.error) { $('impactResult').innerHTML = `<span class="err">${r.error}</span>`; return; }
+    const br = r.blast_radius || {};
+    const up = r.upstream || {};
+    const down = r.downstream || {};
+    const hot = (r.hot_files || []).slice(0, 3).map(h =>
+      `<div class="meta">· ${escapeHTML(h.file)} (${h.edges} edges)</div>`).join('');
+    $('impactResult').innerHTML = `
+      <div style="margin-top:4px">
+        <span class="pill" title="symbols that depend on this one (upstream BFS)">callers ≤3 hops: ${up.total_symbols||0}</span>
+        <span class="pill" title="symbols this one depends on (downstream BFS)">callees ≤3 hops: ${down.total_symbols||0}</span>
+      </div>
+      <div style="margin-top:4px">
+        <span class="pill">total symbols: ${br.total_symbols||0}</span>
+        <span class="pill">files: ${br.files_count||0}</span>
+        <span class="pill">edges: ${br.total_edges||0}</span>
+      </div>
+      ${hot ? `<div class="meta" style="margin-top:6px"><strong>hot files</strong></div>${hot}` : ''}`;
+  } catch (e) { $('impactResult').innerHTML = `<span class="err">${e.message}</span>`; }
+}
+
+async function searchSymbols() {
+  const q = $('search').value.trim();
+  if (!q) { $('searchList').innerHTML = '<div class="stat">type a name above</div>'; return; }
+  const branch = $('branch').value;
+  const qs = new URLSearchParams({ q });
+  if (branch) qs.set('branch', branch);
+  const repos = selectedRepos();
+  if (repos.length) qs.set('repo', repos.join(','));
+  $('searchHeader').textContent = `matches for "${q}"`;
+  $('searchList').innerHTML = '<div class="stat">searching…</div>';
+  try {
+    const data = await getJSON(`/api/v1/graph/search?${qs}`);
+    const matches = data.matches || [];
+    if (!matches.length) { $('searchList').innerHTML = '<div class="stat">(none)</div>'; return; }
+    $('searchList').innerHTML = matches.map(m => `
+      <div class="row" data-symbol="${escapeHTML(m.symbol)}">
+        <div><strong>${escapeHTML(m.label)}</strong></div>
+        <div class="meta">${escapeHTML(m.symbol)}</div>
+        <div class="meta">${escapeHTML(m.repo)} · ${escapeHTML(m.file)}:${m.line}</div>
+      </div>
+    `).join('');
+    $('searchList').querySelectorAll('.row').forEach(el => {
+      el.addEventListener('click', () => exploreSymbol(el.dataset.symbol));
+    });
+  } catch (e) { $('searchList').innerHTML = `<div class="err">${e.message}</div>`; }
+}
+
+function showErr(msg) { $('stat').innerHTML = `<span class="err">${msg}</span>`; }
+function showPane(name) {
+  $('pane-explore').style.display = name === 'explore' ? '' : 'none';
+  $('pane-memories').style.display = name === 'memories' ? '' : 'none';
+  $('tab-explore').classList.toggle('active', name === 'explore');
+  $('tab-memories').classList.toggle('active', name === 'memories');
+}
+
+async function loadMemories() {
+  const repos = selectedRepos();
+  const project = repos[0] || 'REVFA';
+  const q = $('memSearch').value.trim();
+  const qs = new URLSearchParams({ limit: '20' });
+  if (q) qs.set('q', q);
+  $('memHeader').textContent = q ? `semantic: "${q}"` : 'recent';
+  $('memList').innerHTML = '<div class="stat">loading…</div>';
+  try {
+    const data = await getJSON(`/api/v1/memory/${encodeURIComponent(project)}?${qs}`);
+    const mems = (data.result && data.result.memories) || [];
+    if (!mems.length) { $('memList').innerHTML = '<div class="stat">(no results)</div>'; return; }
+    $('memList').innerHTML = mems.map(m => `
+      <div class="row" data-memory-id="${m.id}" title="click to load this memory's subgraph · topic: ${(m.topic_key||'').replace(/"/g,'&quot;')}">
+        <div><strong>${escapeHTML(m.title || '(untitled)')}</strong>${m.score ? `<span class="pill">score ${m.score}</span>` : ''}</div>
+        <div class="meta">${m.type || ''} · ${m.scope || ''} · ${m.project || ''} · ${shortDate(m.updated_at)}</div>
+        <div class="meta" style="margin-top:4px">${escapeHTML((m.content || '').slice(0, 160))}…</div>
+      </div>
+    `).join('');
+    $('memList').querySelectorAll('.row[data-memory-id]').forEach(el => {
+      el.addEventListener('click', () => exploreMemory(Number(el.dataset.memoryId)));
+    });
+  } catch (e) { $('memList').innerHTML = `<div class="err">${e.message}</div>`; }
+}
+
+function escapeHTML(s) { return (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function shortDate(s) { return (s || '').slice(0, 10); }
+
+function visibleChips() {
+  return Array.from($('repos').querySelectorAll('.chip'))
+    .filter(c => c.style.display !== 'none');
+}
+$('repoAll').addEventListener('click', () => {
+  visibleChips().forEach(c => c.classList.add('active'));
+  syncBranches();
+});
+$('repoNone').addEventListener('click', () => {
+  visibleChips().forEach(c => c.classList.remove('active'));
+  syncBranches();
+});
+$('repoFilter').addEventListener('input', e => {
+  const q = e.target.value.trim().toLowerCase();
+  $('repos').querySelectorAll('.chip').forEach(c => {
+    const match = !q || c.dataset.repo.toLowerCase().includes(q);
+    c.style.display = match ? '' : 'none';
+  });
+});
+$('groupFile').addEventListener('change', () => { if (cyData.nodes.length) renderGraph(); });
+$('loadBulk').addEventListener('click', loadBulk);
+$('clear').addEventListener('click', () => { cyData = {nodes:[], edges:[]}; idMap = new Map(); fullById.clear(); if (cy) cy.destroy(); cy = null; $('stat').textContent = ''; $('nodeInfo').innerHTML = '<span class="stat">click any node in the graph</span>'; });
+$('searchGo').addEventListener('click', searchSymbols);
+$('search').addEventListener('keydown', e => { if (e.key === 'Enter') searchSymbols(); });
+$('tab-explore').addEventListener('click', () => showPane('explore'));
+$('tab-memories').addEventListener('click', () => { showPane('memories'); loadMemories(); });
+$('memGo').addEventListener('click', loadMemories);
+$('memSearch').addEventListener('keydown', e => { if (e.key === 'Enter') loadMemories(); });
+
+loadRepos();
+</script>
+</body>
+</html>

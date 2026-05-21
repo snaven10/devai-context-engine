@@ -202,6 +202,50 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 		),
 		s.handleIndexRepo,
 	)
+
+	// 15. memories_by_symbol — "what memories are about this code symbol?"
+	srv.AddTool(
+		mcplib.NewTool("memories_by_symbol",
+			mcplib.WithDescription("Find memories that reference a specific code symbol. Returns memories with their link_sources (files-field=exact file mention, content-mention=symbol named in content, vector-similarity=embedding match)."),
+			mcplib.WithString("symbol", mcplib.Required(), mcplib.Description("Full symbol id, e.g. 'path/file.ts::ClassName.method' or just 'methodName'")),
+			mcplib.WithString("repo", mcplib.Description("Optional repo filter")),
+			mcplib.WithString("branch", mcplib.Description("Optional branch filter")),
+			mcplib.WithNumber("limit", mcplib.Description("Maximum results (default: 20)")),
+		),
+		s.handleMemoriesBySymbol,
+	)
+
+	// 16. memories_by_file — "what memories are about this file?"
+	srv.AddTool(
+		mcplib.NewTool("memories_by_file",
+			mcplib.WithDescription("Find memories that reference a specific file path (any symbol in the file or file-level mention)."),
+			mcplib.WithString("file", mcplib.Required(), mcplib.Description("File path, e.g. 'apps/admin/src/auth.service.ts'")),
+			mcplib.WithNumber("limit", mcplib.Description("Maximum results (default: 20)")),
+		),
+		s.handleMemoriesByFile,
+	)
+
+	// 17. memory_refs — raw junction rows for a memory (symbols + files it references)
+	srv.AddTool(
+		mcplib.NewTool("memory_refs",
+			mcplib.WithDescription("Get the raw symbol/file references attached to a single memory by id. Useful when an agent wants to follow a memory back into the codebase."),
+			mcplib.WithNumber("id", mcplib.Required(), mcplib.Description("Memory id (integer)")),
+		),
+		s.handleMemoryRefs,
+	)
+
+	// 18. impact_analysis — "if I change this symbol, what breaks?"
+	srv.AddTool(
+		mcplib.NewTool("impact_analysis",
+			mcplib.WithDescription("Trace the blast radius of a symbol — direct callers + callees, transitive counts up to a depth, affected files and hot files. Use BEFORE refactoring to understand the impact of a change."),
+			mcplib.WithString("symbol", mcplib.Required(), mcplib.Description("Full symbol id, e.g. 'src/foo.ts::Bar.baz' or 'parseBoolean'")),
+			mcplib.WithString("repo", mcplib.Required(), mcplib.Description("Repository")),
+			mcplib.WithString("branch", mcplib.Required(), mcplib.Description("Branch")),
+			mcplib.WithNumber("depth", mcplib.Description("BFS depth, 1..8 (default 3)")),
+			mcplib.WithString("kind", mcplib.Description("Edge kind: calls (default), imports, or empty for any")),
+		),
+		s.handleImpactAnalysis,
+	)
 }
 
 // --- Argument helpers ---
@@ -418,6 +462,61 @@ func (s *Server) handleBuildContext(ctx context.Context, request mcplib.CallTool
 		}
 		contextBuf.WriteString(chunk)
 		tokensUsed += chunkTokens
+	}
+
+	// Step 3: Pull memories STRUCTURALLY linked to the files we just included
+	// (via memory_symbol_references). Catches knowledge that doesn't match the
+	// query semantically but is documented against this exact code.
+	{
+		seenFiles := map[string]bool{}
+		// Re-scan the chosen results to extract their files, top 5
+		for _, r := range results {
+			if len(seenFiles) >= 5 {
+				break
+			}
+			item, ok := r.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			file, _ := item["file"].(string)
+			if file == "" || seenFiles[file] {
+				continue
+			}
+			seenFiles[file] = true
+		}
+		seenMemories := map[float64]bool{}
+		for file := range seenFiles {
+			linked, err := s.mlClient.Call("memories_by_file", map[string]interface{}{
+				"file": file, "limit": 5,
+			})
+			if err != nil {
+				continue
+			}
+			lm, _ := linked.(map[string]interface{})
+			mems, _ := lm["memories"].([]interface{})
+			for _, mem := range mems {
+				mm, _ := mem.(map[string]interface{})
+				if mm == nil {
+					continue
+				}
+				idF, _ := mm["id"].(float64)
+				if seenMemories[idF] {
+					continue
+				}
+				seenMemories[idF] = true
+				title, _ := mm["title"].(string)
+				content, _ := mm["content"].(string)
+				srcs, _ := mm["link_sources"].(string)
+				note := fmt.Sprintf("// [linked memory · %s · about %s]\n// %s\n%s\n\n",
+					srcs, file, title, content)
+				noteTokens := len(note) / 4
+				if tokensUsed+noteTokens > maxTokens {
+					break
+				}
+				contextBuf.WriteString(note)
+				tokensUsed += noteTokens
+			}
+		}
 	}
 
 	return mcplib.NewToolResultText(contextBuf.String()), nil
@@ -696,6 +795,82 @@ func (s *Server) handleIndexRepo(ctx context.Context, request mcplib.CallToolReq
 		return mcplib.NewToolResultError(fmt.Sprintf("indexing failed: %v", err)), nil
 	}
 
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleMemoriesBySymbol(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	symbol := argString(a, "symbol", "")
+	if symbol == "" {
+		return mcplib.NewToolResultError("symbol is required"), nil
+	}
+	params := map[string]interface{}{
+		"symbol": symbol,
+		"limit":  int(argFloat(a, "limit", 20)),
+	}
+	if v := argString(a, "repo", ""); v != "" {
+		params["repo"] = v
+	}
+	if v := argString(a, "branch", ""); v != "" {
+		params["branch"] = v
+	}
+	result, err := s.mlClient.Call("memories_by_symbol", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("memories_by_symbol failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleMemoriesByFile(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	file := argString(a, "file", "")
+	if file == "" {
+		return mcplib.NewToolResultError("file is required"), nil
+	}
+	result, err := s.mlClient.Call("memories_by_file", map[string]interface{}{
+		"file":  file,
+		"limit": int(argFloat(a, "limit", 20)),
+	})
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("memories_by_file failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleMemoryRefs(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	id := int(argFloat(a, "id", 0))
+	if id <= 0 {
+		return mcplib.NewToolResultError("id must be a positive integer"), nil
+	}
+	result, err := s.mlClient.Call("memory_refs", map[string]interface{}{"id": id})
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("memory_refs failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleImpactAnalysis(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	symbol := argString(a, "symbol", "")
+	repo := argString(a, "repo", s.activeRepo)
+	branch := argString(a, "branch", s.activeBranch)
+	depth := int(argFloat(a, "depth", 3))
+	kind := argString(a, "kind", "calls")
+	if symbol == "" || repo == "" || branch == "" {
+		return mcplib.NewToolResultError("symbol, repo, and branch are required"), nil
+	}
+	result, err := s.mlClient.Call("impact_analysis", map[string]interface{}{
+		"symbol": symbol, "repo": repo, "branch": branch,
+		"depth": depth, "kind": kind,
+	})
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("impact_analysis failed: %v", err)), nil
+	}
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
 }

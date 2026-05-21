@@ -243,6 +243,99 @@ func (c *StdioClient) SyncIndex(repo, branch string) (interface{}, error) {
 	return c.Call("sync_index", params)
 }
 
+// MemoryContext lists recent memories filtered by project/scope (no semantic query).
+func (c *StdioClient) MemoryContext(project, scope string, limit int) (interface{}, error) {
+	params := map[string]interface{}{"limit": limit}
+	if project != "" {
+		params["project"] = project
+	}
+	if scope != "" {
+		params["scope"] = scope
+	}
+	return c.Call("memory_context", params)
+}
+
+// Recall searches memories semantically with optional metadata filters.
+func (c *StdioClient) Recall(query, scope, memType, project string, limit int) (interface{}, error) {
+	params := map[string]interface{}{"query": query, "limit": limit}
+	if scope != "" {
+		params["scope"] = scope
+	}
+	if memType != "" {
+		params["type"] = memType
+	}
+	if project != "" {
+		params["project"] = project
+	}
+	return c.Call("recall", params)
+}
+
+// Remember persists a memory. Fields map matches the Python remember handler params.
+func (c *StdioClient) Remember(fields map[string]interface{}) (interface{}, error) {
+	return c.Call("remember", fields)
+}
+
+// MemoriesBySymbol returns memories that reference a specific code symbol.
+func (c *StdioClient) MemoriesBySymbol(symbol, repo, branch string, limit int) (interface{}, error) {
+	p := map[string]interface{}{"symbol": symbol, "limit": limit}
+	if repo != "" {
+		p["repo"] = repo
+	}
+	if branch != "" {
+		p["branch"] = branch
+	}
+	return c.Call("memories_by_symbol", p)
+}
+
+// MemoriesByFile returns memories that reference a file path.
+func (c *StdioClient) MemoriesByFile(file string, limit int) (interface{}, error) {
+	return c.Call("memories_by_file", map[string]interface{}{"file": file, "limit": limit})
+}
+
+// MemoryRefs returns the junction rows (symbol, file, source) for one memory.
+func (c *StdioClient) MemoryRefs(memoryID int) (interface{}, error) {
+	return c.Call("memory_refs", map[string]interface{}{"id": memoryID})
+}
+
+// ImpactAnalysis traces upstream callers + downstream callees of a symbol.
+// depth caps the BFS (1=direct only). kind = "calls" | "imports" | "" (any).
+func (c *StdioClient) ImpactAnalysis(symbol, repo, branch string, depth int, kind string) (interface{}, error) {
+	return c.Call("impact_analysis", map[string]interface{}{
+		"symbol": symbol, "repo": repo, "branch": branch,
+		"depth": depth, "kind": kind,
+	})
+}
+
+// FTSRebuild populates (or rebuilds) the graph_symbols_fts index.
+func (c *StdioClient) FTSRebuild(force bool) (interface{}, error) {
+	return c.Call("fts_rebuild", map[string]interface{}{"force": force})
+}
+
+// SymbolMemoryCounts returns {symbol: count} for the heatmap overlay.
+func (c *StdioClient) SymbolMemoryCounts(repo, branch string) (interface{}, error) {
+	p := map[string]interface{}{}
+	if repo != "" {
+		p["repo"] = repo
+	}
+	if branch != "" {
+		p["branch"] = branch
+	}
+	return c.Call("symbol_memory_counts", p)
+}
+
+// BackfillSymbolRefs re-extracts symbol references for every existing memory.
+func (c *StdioClient) BackfillSymbolRefs() (interface{}, error) {
+	return c.Call("backfill_symbol_refs", map[string]interface{}{})
+}
+
+// BackfillVectorLinks bridges unlinked memories to code via vector similarity.
+// onlyUnlinked: when true, only processes memories that have no junction rows yet.
+func (c *StdioClient) BackfillVectorLinks(topK int, onlyUnlinked bool) (interface{}, error) {
+	return c.Call("backfill_vector_links", map[string]interface{}{
+		"top_k": topK, "only_unlinked": onlyUnlinked,
+	})
+}
+
 // Close stops the Python ML service.
 func (c *StdioClient) Close() error {
 	c.stdin.Close()

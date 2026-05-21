@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -102,6 +103,26 @@ class MemoryStore:
         summary TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project, started_at DESC);
+
+    -- Junction table linking memories to specific code symbols / files.
+    -- Populated by MemoryStore.extract_symbol_refs(...) at remember() time and
+    -- via a one-shot backfill. The relation is many-to-many: one memory can
+    -- mention many symbols, and one symbol can appear in many memories.
+    CREATE TABLE IF NOT EXISTS memory_symbol_references (
+        memory_id  INTEGER NOT NULL,
+        symbol     TEXT NOT NULL,        -- full graph_edges id, e.g. "path/file.ts::Class.method"
+        file       TEXT NOT NULL DEFAULT '',
+        line       INTEGER NOT NULL DEFAULT 0,
+        repo       TEXT NOT NULL DEFAULT '',
+        branch     TEXT NOT NULL DEFAULT '',
+        source     TEXT NOT NULL DEFAULT '',  -- 'files-field' | 'content-mention' | 'manual'
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (memory_id, symbol, file),
+        FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_msref_symbol ON memory_symbol_references(symbol);
+    CREATE INDEX IF NOT EXISTS idx_msref_file   ON memory_symbol_references(file);
+    CREATE INDEX IF NOT EXISTS idx_msref_repo   ON memory_symbol_references(repo, branch);
     """
 
     DEDUP_WINDOW_SECONDS = 900  # 15 minutes
@@ -203,7 +224,200 @@ class MemoryStore:
         self._conn.commit()
         memory.id = cursor.lastrowid
         logger.info("Saved new memory #%d: %s", memory.id, memory.title or memory.content[:50])
+        try:
+            self.extract_symbol_refs(memory)
+        except Exception as e:
+            # Extraction is best-effort: a broken graph index must not block remember().
+            logger.warning("extract_symbol_refs failed for memory #%d: %s", memory.id, e)
         return memory
+
+    # --- Symbol linkage --------------------------------------------------------
+
+    _IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
+
+    @staticmethod
+    def _short_label(symbol: str) -> str:
+        """Mirror Go's shortLabel: tail after '::' or last '/'."""
+        if "::" in symbol:
+            return symbol.rsplit("::", 1)[1]
+        if "/" in symbol:
+            return symbol.rsplit("/", 1)[1]
+        return symbol
+
+    def extract_symbol_refs(self, memory: Memory) -> int:
+        """Populate memory_symbol_references for a saved memory.
+
+        Strategy:
+          1. For each file in memory.files (CSV), insert a file-level reference (no specific symbol)
+          2. For those files, look up symbols defined in them via graph_edges
+          3. Text-match the short label of each symbol against memory.content; if it
+             appears as a distinct identifier, link it.
+
+        Idempotent: PRIMARY KEY (memory_id, symbol, file) makes re-runs cheap.
+        Returns the number of distinct references inserted (counting both files and symbols).
+        """
+        if memory.id is None or not memory.content:
+            return 0
+        files = [f.strip() for f in (memory.files or "").split(",") if f.strip()]
+        # Always-rebuild semantics: drop prior rows for this memory then re-insert
+        self._conn.execute("DELETE FROM memory_symbol_references WHERE memory_id = ?", (memory.id,))
+
+        now = datetime.now(timezone.utc).isoformat()
+        inserted = 0
+
+        # 1. File-level refs (symbol = '' means "any symbol in this file")
+        for f in files:
+            self._conn.execute(
+                """INSERT OR IGNORE INTO memory_symbol_references
+                   (memory_id, symbol, file, line, repo, branch, source, created_at)
+                   VALUES (?, '', ?, 0, ?, ?, 'files-field', ?)""",
+                (memory.id, f, memory.repo, memory.branch, now),
+            )
+            inserted += 1
+
+        # 2. Symbol-level refs (only if the graph_edges table exists in the same DB)
+        try:
+            self._conn.execute("SELECT 1 FROM graph_edges LIMIT 0")
+        except sqlite3.OperationalError:
+            self._conn.commit()
+            return inserted
+
+        if not files:
+            self._conn.commit()
+            return inserted
+
+        # Tokenize memory content into a set of candidate identifiers
+        tokens = set(self._IDENT_RE.findall(memory.content))
+        if not tokens:
+            self._conn.commit()
+            return inserted
+
+        placeholders = ",".join(["?"] * len(files))
+        # Pull all symbols (source AND target) that live in any of the memory's files
+        rows = self._conn.execute(
+            f"""SELECT DISTINCT source AS symbol, source_file AS file, repo, branch, line
+                FROM graph_edges
+                WHERE source_file IN ({placeholders})
+                UNION
+                SELECT DISTINCT target AS symbol, source_file AS file, repo, branch, line
+                FROM graph_edges
+                WHERE source_file IN ({placeholders})""",
+            files + files,
+        ).fetchall()
+
+        seen = set()
+        for r in rows:
+            symbol = r["symbol"]
+            short = self._short_label(symbol)
+            if short in ("<unknown>", "<module>", "<anonymous>") or len(short) < 3:
+                continue
+            if short not in tokens:
+                continue
+            key = (symbol, r["file"])
+            if key in seen:
+                continue
+            seen.add(key)
+            self._conn.execute(
+                """INSERT OR IGNORE INTO memory_symbol_references
+                   (memory_id, symbol, file, line, repo, branch, source, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'content-mention', ?)""",
+                (memory.id, symbol, r["file"], r["line"], r["repo"] or memory.repo,
+                 r["branch"] or memory.branch, now),
+            )
+            inserted += 1
+
+        self._conn.commit()
+        return inserted
+
+    def memories_by_symbol(self, symbol: str, repo: str = "", branch: str = "",
+                           limit: int = 20) -> list[tuple[Memory, str]]:
+        """Return [(memory, link_sources)] for memories referencing the symbol.
+
+        link_sources is a CSV like 'files-field,content-mention'. The frontend
+        picks the highest-precedence one for badging.
+        """
+        conds = ["msr.symbol = ?", "m.deleted_at IS NULL"]
+        params: list[Any] = [symbol]
+        if repo:
+            conds.append("msr.repo = ?")
+            params.append(repo)
+        if branch:
+            conds.append("msr.branch = ?")
+            params.append(branch)
+        params.append(limit)
+        rows = self._conn.execute(
+            f"""SELECT m.*, GROUP_CONCAT(DISTINCT msr.source) AS link_sources
+                FROM memories m
+                JOIN memory_symbol_references msr ON msr.memory_id = m.id
+                WHERE {' AND '.join(conds)}
+                GROUP BY m.id
+                ORDER BY m.updated_at DESC LIMIT ?""",
+            params,
+        ).fetchall()
+        return [(self._row_to_memory(r), r["link_sources"] or "") for r in rows]
+
+    def memories_by_file(self, file: str, limit: int = 20) -> list[tuple[Memory, str]]:
+        """Return [(memory, link_sources)] for memories referencing the file."""
+        rows = self._conn.execute(
+            """SELECT m.*, GROUP_CONCAT(DISTINCT msr.source) AS link_sources
+               FROM memories m
+               JOIN memory_symbol_references msr ON msr.memory_id = m.id
+               WHERE msr.file = ? AND m.deleted_at IS NULL
+               GROUP BY m.id
+               ORDER BY m.updated_at DESC LIMIT ?""",
+            (file, limit),
+        ).fetchall()
+        return [(self._row_to_memory(r), r["link_sources"] or "") for r in rows]
+
+    def memory_refs(self, memory_id: int) -> list[dict]:
+        """Return the raw junction rows for a memory (symbol, file, source...).
+        Used by the bidirectional UI to derive a subgraph from a memory click."""
+        rows = self._conn.execute(
+            """SELECT symbol, file, line, repo, branch, source
+               FROM memory_symbol_references WHERE memory_id = ?""",
+            (memory_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def symbol_reference_counts(self, repo: str = "", branch: str = "") -> dict[str, int]:
+        """Return {symbol: memory_count} for nodes that have ≥1 linked memory.
+        Used by the frontend to render the heatmap."""
+        conds = ["msr.symbol != ''"]
+        params: list[Any] = []
+        if repo:
+            conds.append("msr.repo = ?")
+            params.append(repo)
+        if branch:
+            conds.append("msr.branch = ?")
+            params.append(branch)
+        rows = self._conn.execute(
+            f"""SELECT msr.symbol, COUNT(DISTINCT msr.memory_id) AS n
+                FROM memory_symbol_references msr
+                WHERE {' AND '.join(conds)}
+                GROUP BY msr.symbol""",
+            params,
+        ).fetchall()
+        return {r["symbol"]: r["n"] for r in rows}
+
+    def backfill_symbol_refs(self) -> dict:
+        """Re-run extract_symbol_refs across every non-deleted memory.
+        Use after upgrading or after a fresh index.
+        Returns {memories_scanned, refs_inserted}."""
+        rows = self._conn.execute(
+            "SELECT id FROM memories WHERE deleted_at IS NULL"
+        ).fetchall()
+        scanned = 0
+        inserted = 0
+        for r in rows:
+            mem = self.get(r["id"])
+            if mem is None:
+                continue
+            scanned += 1
+            inserted += self.extract_symbol_refs(mem)
+        logger.info("backfill_symbol_refs: scanned=%d inserted=%d", scanned, inserted)
+        return {"memories_scanned": scanned, "refs_inserted": inserted}
+
+    # --- end symbol linkage ----------------------------------------------------
 
     def get(self, memory_id: int) -> Memory | None:
         """Get a single memory by ID."""

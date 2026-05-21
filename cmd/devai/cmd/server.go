@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/snaven10/devai/internal/api"
 	"github.com/snaven10/devai/internal/config"
 	"github.com/snaven10/devai/internal/mcp"
 	"github.com/snaven10/devai/internal/mlclient"
@@ -39,14 +40,36 @@ var serverMCPCmd = &cobra.Command{
 	RunE:  runServerMCP,
 }
 
+var serverAPICmd = &cobra.Command{
+	Use:   "api",
+	Short: "Start the HTTP REST API server",
+	Long: `Start the HTTP REST API server backed by the Python memory/vector store.
+
+Endpoints:
+  GET  /api/v1/health
+  GET  /api/v1/memory/{project}            (filters: scope, type, q, limit)
+  POST /api/v1/memory/{project}            (body: title, content, type, ...)
+  GET  /api/v1/index/{repo}
+  POST /api/v1/index/{repo}/push
+  POST /api/v1/index/{repo}/pull
+  GET  /api/v1/status
+
+Auth: optional bearer token via --token or DEVAI_API_TOKEN env var.`,
+	RunE: runServerAPI,
+}
+
 func init() {
 	serverStartCmd.Flags().String("model", "minilm-l6", "Embedding model")
 	serverStartCmd.Flags().String("state-dir", ".devai/state", "State directory")
 	serverStartCmd.Flags().Bool("background", false, "Run in background")
 
+	serverAPICmd.Flags().String("addr", "127.0.0.1:8080", "Listen address")
+	serverAPICmd.Flags().String("token", "", "Bearer token (default empty = no auth; can also use DEVAI_API_TOKEN env)")
+
 	serverCmd.AddCommand(serverStartCmd)
 	serverCmd.AddCommand(serverStatusCmd)
 	serverCmd.AddCommand(serverMCPCmd)
+	serverCmd.AddCommand(serverAPICmd)
 	rootCmd.AddCommand(serverCmd)
 }
 
@@ -191,6 +214,47 @@ func runServerMCP(cmd *cobra.Command, args []string) error {
 	// Start MCP server on stdin/stdout
 	mcpSrv := mcp.New(client)
 	return mcpSrv.ServeStdio()
+}
+
+func runServerAPI(cmd *cobra.Command, args []string) error {
+	addr, _ := cmd.Flags().GetString("addr")
+	token, _ := cmd.Flags().GetString("token")
+	if token == "" {
+		token = os.Getenv("DEVAI_API_TOKEN")
+	}
+
+	projectCfg, storageEnv, err := resolvedStorageConfig()
+	if err != nil {
+		return err
+	}
+
+	// State dir resolution mirrors what the Python ML server does:
+	//   1. DEVAI_STATE_DIR env  2. project config  3. XDG default
+	stateDir := os.Getenv("DEVAI_STATE_DIR")
+	if stateDir == "" && projectCfg != nil && projectCfg.StateDir != "" {
+		stateDir = projectCfg.StateDir
+	}
+	if stateDir == "" {
+		home, _ := os.UserHomeDir()
+		stateDir = filepath.Join(home, ".local", "share", "devai", "state")
+	}
+
+	client, err := mlclient.NewStdioClient(
+		mlclient.WithEnv(storageEnv),
+		mlclient.WithConfig(projectCfg),
+	)
+	if err != nil {
+		return fmt.Errorf("starting ML service: %w", err)
+	}
+	defer client.Close()
+
+	srv := api.New(
+		api.Config{Addr: addr, APIToken: token, StateDir: stateDir},
+		nil,
+		client,
+		api.WebFS(),
+	)
+	return srv.Start()
 }
 
 func runServerStatus(cmd *cobra.Command, args []string) error {

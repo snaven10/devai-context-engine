@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sqlite3
 import logging
 from dataclasses import dataclass
@@ -57,6 +58,21 @@ class SQLiteGraphStore:
     CREATE INDEX IF NOT EXISTS idx_edges_source ON graph_edges(repo, branch, source);
     CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(repo, branch, target);
     CREATE INDEX IF NOT EXISTS idx_edges_source_file ON graph_edges(repo, branch, source_file);
+
+    -- FTS5 virtual table for fast symbol/file search.
+    -- canonical / file / repo / branch / line are UNINDEXED metadata (no FTS cost).
+    -- `label` is the searchable column: the tokenizer breaks symbol ids on
+    -- non-alphanumerics so 'path/file.ts::Class.method' tokenizes to
+    -- {path, file, ts, Class, method} — good for prefix matching.
+    CREATE VIRTUAL TABLE IF NOT EXISTS graph_symbols_fts USING fts5(
+        label,
+        canonical UNINDEXED,
+        repo UNINDEXED,
+        branch UNINDEXED,
+        source_file UNINDEXED,
+        line UNINDEXED,
+        tokenize="unicode61 remove_diacritics 2"
+    );
     """
 
     def __init__(self, db_path: str) -> None:
@@ -93,17 +109,73 @@ class SQLiteGraphStore:
     def add_edges(self, edges: list[StoredEdge]) -> None:
         if not edges:
             return
+        normalized = [
+            (e.source, e.target, e.kind, e.source_file, e.target_file,
+             e.line, self.normalize_repo_path(e.repo), e.branch)
+            for e in edges
+        ]
         self._conn.executemany(
             """INSERT OR REPLACE INTO graph_edges
                (source, target, kind, source_file, target_file, line, repo, branch)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            [
-                (e.source, e.target, e.kind, e.source_file, e.target_file,
-                 e.line, self.normalize_repo_path(e.repo), e.branch)
-                for e in edges
-            ],
+            normalized,
+        )
+        # Keep the FTS5 index in sync incrementally. We insert one row per
+        # (symbol, file, line) — duplicates are filtered at populate time
+        # but here we just append; rebuild on demand handles cleanup.
+        fts_rows = []
+        for (src, tgt, kind, src_file, tgt_file, line, repo, branch) in normalized:
+            fts_rows.append((self._searchable_label(src), src, repo, branch, src_file, line))
+            fts_rows.append((self._searchable_label(tgt), tgt, repo, branch, src_file, line))
+        self._conn.executemany(
+            """INSERT INTO graph_symbols_fts (label, canonical, repo, branch, source_file, line)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            fts_rows,
         )
         self._conn.commit()
+
+    _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+    @classmethod
+    def _searchable_label(cls, symbol: str) -> str:
+        """Expand a symbol into a tokenizer-friendly label.
+
+        Adds spaces at camelCase boundaries so 'mapDtoToBirthRecord'
+        becomes 'mapDtoToBirthRecord map Dto To Birth Record' and FTS5 will
+        index every part as a queryable token.
+        """
+        if not symbol:
+            return symbol
+        expanded = cls._CAMEL_BOUNDARY_RE.sub(" ", symbol)
+        if expanded == symbol:
+            return symbol
+        return f"{symbol} {expanded}"
+
+    def populate_fts(self, force: bool = False) -> dict:
+        """Rebuild graph_symbols_fts from current graph_edges. Idempotent.
+        Use after a fresh index, after upgrading, or when search seems stale.
+        Returns row counts."""
+        current = self._conn.execute("SELECT COUNT(*) FROM graph_symbols_fts").fetchone()[0]
+        if current > 0 and not force:
+            return {"already_populated": True, "rows": current}
+        self._conn.execute("DELETE FROM graph_symbols_fts")
+
+        # Two-step: pull distinct rows from graph_edges in Python so we can
+        # apply the camelCase expansion to the label before insert.
+        rows = self._conn.execute("""
+            SELECT DISTINCT source AS sym, repo, branch, source_file, line FROM graph_edges
+            UNION
+            SELECT DISTINCT target AS sym, repo, branch, source_file, line FROM graph_edges
+        """).fetchall()
+        self._conn.executemany(
+            """INSERT INTO graph_symbols_fts (label, canonical, repo, branch, source_file, line)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [(self._searchable_label(r[0]), r[0], r[1], r[2], r[3], r[4]) for r in rows],
+        )
+        self._conn.commit()
+        new = self._conn.execute("SELECT COUNT(*) FROM graph_symbols_fts").fetchone()[0]
+        logger.info("FTS5 rebuilt: %d rows", new)
+        return {"rebuilt": True, "rows": new}
 
     def remove_file(self, repo: str, branch: str, file_path: str) -> None:
         self._conn.execute(
@@ -211,3 +283,118 @@ class SQLiteGraphStore:
                     frontier.add(e.target)
 
         return all_edges
+
+    def impact_analysis(self, repo: str, branch: str, symbol: str,
+                        depth: int = 3, kind: str = "calls") -> dict:
+        """Trace the impact radius of a symbol.
+
+        Computes two directional BFS up to `depth`:
+          - upstream (callers): follow target→source. Who depends on this?
+          - downstream (callees): follow source→target. What does this depend on?
+
+        Returns counts at each depth, the set of affected files,
+        and the hottest files in the blast radius (top by edge count).
+
+        `kind` filters edge kind ('calls', 'imports', or '' for any).
+        Use depth=1 to get just the direct neighborhood.
+        """
+        if not symbol:
+            return {"error": "symbol is required"}
+        depth = max(1, min(int(depth), 8))
+        kind_clause = " AND kind = ?" if kind else ""
+
+        def bfs(direction: str) -> dict:
+            """direction = 'upstream' (callers) or 'downstream' (callees)"""
+            visited: set[str] = {symbol}
+            frontier: set[str] = {symbol}
+            by_depth: list[list[str]] = []  # symbols newly added at each depth
+            edges_in_radius: list[StoredEdge] = []
+
+            for _ in range(depth):
+                if not frontier:
+                    by_depth.append([])
+                    continue
+                placeholders = ",".join("?" * len(frontier))
+                if direction == "upstream":
+                    sql = (
+                        f"SELECT source, target, kind, source_file, target_file, line, repo, branch "
+                        f"FROM graph_edges WHERE repo = ? AND branch = ? "
+                        f"AND target IN ({placeholders}){kind_clause}"
+                    )
+                else:
+                    sql = (
+                        f"SELECT source, target, kind, source_file, target_file, line, repo, branch "
+                        f"FROM graph_edges WHERE repo = ? AND branch = ? "
+                        f"AND source IN ({placeholders}){kind_clause}"
+                    )
+                args: list[Any] = [repo, branch, *frontier]
+                if kind:
+                    args.append(kind)
+                rows = self._conn.execute(sql, args).fetchall()
+                edges = [StoredEdge(*r) for r in rows]
+                edges_in_radius.extend(edges)
+
+                next_frontier: set[str] = set()
+                for e in edges:
+                    candidate = e.source if direction == "upstream" else e.target
+                    if candidate and candidate not in visited:
+                        next_frontier.add(candidate)
+                by_depth.append(sorted(next_frontier))
+                visited.update(next_frontier)
+                frontier = next_frontier
+
+            return {
+                "symbols": sorted(visited - {symbol}),  # exclude the seed
+                "by_depth": by_depth,
+                "edges": edges_in_radius,
+            }
+
+        upstream = bfs("upstream")
+        downstream = bfs("downstream")
+
+        # Direct = depth 1
+        def edges_at(edges: list[StoredEdge], src_or_tgt: str) -> list[dict]:
+            return [
+                {
+                    "symbol": e.source if src_or_tgt == "source" else e.target,
+                    "file": e.source_file, "line": e.line, "kind": e.kind,
+                }
+                for e in edges
+                if (src_or_tgt == "source" and e.target == symbol) or
+                   (src_or_tgt == "target" and e.source == symbol)
+            ]
+
+        direct_callers = edges_at(upstream["edges"], "source")
+        direct_callees = edges_at(downstream["edges"], "target")
+
+        # Blast radius: union of all touched symbols + files
+        all_edges = upstream["edges"] + downstream["edges"]
+        files_set: dict[str, int] = {}
+        for e in all_edges:
+            if e.source_file:
+                files_set[e.source_file] = files_set.get(e.source_file, 0) + 1
+        hot_files = sorted(files_set.items(), key=lambda kv: -kv[1])[:5]
+
+        return {
+            "symbol": symbol,
+            "repo": repo,
+            "branch": branch,
+            "depth": depth,
+            "kind": kind or "any",
+            "direct_callers": direct_callers,
+            "direct_callees": direct_callees,
+            "upstream": {
+                "total_symbols": len(upstream["symbols"]),
+                "symbols_by_depth": upstream["by_depth"],
+            },
+            "downstream": {
+                "total_symbols": len(downstream["symbols"]),
+                "symbols_by_depth": downstream["by_depth"],
+            },
+            "blast_radius": {
+                "total_symbols": len(upstream["symbols"]) + len(downstream["symbols"]),
+                "total_edges": len(all_edges),
+                "files_count": len(files_set),
+            },
+            "hot_files": [{"file": f, "edges": n} for f, n in hot_files],
+        }

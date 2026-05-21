@@ -19,6 +19,24 @@ from .stores.memory_store import Memory, MemoryStore
 logger = logging.getLogger(__name__)
 
 
+def _mem_to_dict(m: Memory) -> dict:
+    """Serialize a Memory to the JSON shape returned by recall/memory_context."""
+    return {
+        "id": m.id,
+        "title": m.title,
+        "content": m.content,
+        "type": m.memory_type,
+        "scope": m.scope,
+        "project": m.project,
+        "topic_key": m.topic_key,
+        "tags": m.tags,
+        "files": m.files,
+        "revision_count": m.revision_count,
+        "created_at": m.created_at,
+        "updated_at": m.updated_at,
+    }
+
+
 class MLService:
     """DevAI ML Service — handles embedding, parsing, and indexing.
 
@@ -125,6 +143,14 @@ class MLService:
             "memory_context": self._handle_memory_context,
             "memory_update": self._handle_memory_update,
             "memory_stats": self._handle_memory_stats,
+            "memories_by_symbol": self._handle_memories_by_symbol,
+            "memories_by_file": self._handle_memories_by_file,
+            "symbol_memory_counts": self._handle_symbol_memory_counts,
+            "memory_refs": self._handle_memory_refs,
+            "impact_analysis": self._handle_impact_analysis,
+            "fts_rebuild": self._handle_fts_rebuild,
+            "backfill_symbol_refs": self._handle_backfill_symbol_refs,
+            "backfill_vector_links": self._handle_backfill_vector_links,
             "get_branch_context": self._handle_get_branch_context,
             "get_session_history": self._handle_get_session_history,
             "index_status": self._handle_index_status,
@@ -628,6 +654,162 @@ class MLService:
     def _handle_memory_stats(self, params: dict) -> dict:
         """Memory statistics."""
         return self._memory_store.stats()
+
+    def _handle_memories_by_symbol(self, params: dict) -> dict:
+        """Memories that reference a specific code symbol (full id)."""
+        symbol = params["symbol"]
+        repo = params.get("repo", "")
+        branch = params.get("branch", "")
+        limit = int(params.get("limit", 20))
+        rows = self._memory_store.memories_by_symbol(symbol, repo, branch, limit)
+        out = []
+        for m, link_sources in rows:
+            d = _mem_to_dict(m)
+            d["link_sources"] = link_sources
+            out.append(d)
+        return {"symbol": symbol, "count": len(out), "memories": out}
+
+    def _handle_memories_by_file(self, params: dict) -> dict:
+        """Memories that reference a file path."""
+        file = params["file"]
+        limit = int(params.get("limit", 20))
+        rows = self._memory_store.memories_by_file(file, limit)
+        out = []
+        for m, link_sources in rows:
+            d = _mem_to_dict(m)
+            d["link_sources"] = link_sources
+            out.append(d)
+        return {"file": file, "count": len(out), "memories": out}
+
+    def _handle_fts_rebuild(self, params: dict) -> dict:
+        """Rebuild graph_symbols_fts from current graph_edges.
+        Run once after upgrading to a build that supports FTS5 symbol search,
+        or after a fresh index from scratch."""
+        force = bool(params.get("force", False))
+        return self._graph_store.populate_fts(force=force)
+
+    def _handle_impact_analysis(self, params: dict) -> dict:
+        """Trace upstream callers + downstream callees for a symbol up to `depth`.
+        Returns direct neighbors, transitive counts, files affected, hot files."""
+        symbol = params.get("symbol", "")
+        repo = params.get("repo", "")
+        branch = params.get("branch", "")
+        depth = int(params.get("depth", 3))
+        kind = params.get("kind", "calls")
+        if not symbol or not repo or not branch:
+            return {"error": "symbol, repo, and branch are required"}
+        return self._graph_store.impact_analysis(repo, branch, symbol, depth=depth, kind=kind)
+
+    def _handle_memory_refs(self, params: dict) -> dict:
+        """Junction rows for a single memory: which symbols and files it references."""
+        memory_id = int(params["id"])
+        refs = self._memory_store.memory_refs(memory_id)
+        return {"id": memory_id, "count": len(refs), "refs": refs}
+
+    def _handle_symbol_memory_counts(self, params: dict) -> dict:
+        """Map {symbol: memory_count} for the heatmap overlay."""
+        repo = params.get("repo", "")
+        branch = params.get("branch", "")
+        return {"counts": self._memory_store.symbol_reference_counts(repo, branch)}
+
+    def _handle_backfill_symbol_refs(self, params: dict) -> dict:
+        """Re-extract symbol references for every existing memory.
+        Run once after upgrading or after a fresh index."""
+        return self._memory_store.backfill_symbol_refs()
+
+    def _handle_backfill_vector_links(self, params: dict) -> dict:
+        """Bridge memories that have no explicit file/symbol mentions to code
+        via vector similarity.
+
+        For each candidate memory:
+          1. Re-embed `title + content` (deterministic, cheap)
+          2. Search LanceDB for the top-K nearest CODE chunks
+          3. Insert (memory_id, symbol, file) refs with source='vector-similarity'
+
+        Params:
+          top_k         (default 5)     — how many nearest code chunks per memory
+          only_unlinked (default True)  — skip memories that already have any junction row
+          repo          (optional)      — restrict the LanceDB search to a specific repo
+        """
+        from datetime import datetime, timezone as _tz
+        top_k = int(params.get("top_k", 5))
+        only_unlinked = bool(params.get("only_unlinked", True))
+        repo_filter = params.get("repo", "")
+
+        if only_unlinked:
+            rows = self._memory_store._conn.execute(
+                """SELECT id, title, content, repo, branch FROM memories m
+                   WHERE deleted_at IS NULL
+                     AND NOT EXISTS (
+                       SELECT 1 FROM memory_symbol_references msr
+                       WHERE msr.memory_id = m.id
+                     )"""
+            ).fetchall()
+        else:
+            rows = self._memory_store._conn.execute(
+                "SELECT id, title, content, repo, branch FROM memories WHERE deleted_at IS NULL"
+            ).fetchall()
+
+        now = datetime.now(_tz.utc).isoformat()
+        processed = 0
+        skipped_empty = 0
+        inserted_total = 0
+        for r in rows:
+            text = ((r["title"] or "") + " " + (r["content"] or "")).strip()
+            if not text:
+                skipped_empty += 1
+                continue
+
+            try:
+                vec = self._embedding.embed_single(text)
+            except Exception as e:
+                logger.warning("embed failed for memory #%d: %s", r["id"], e)
+                continue
+
+            # Over-fetch heavily: memory-vs-memory hits dominate top-15 for
+            # abstract memories (HU inventories, session summaries). 30x lets
+            # us reach into the code chunks before truncating.
+            try:
+                hits = self._vector_store.search(vector=vec, limit=top_k * 30,
+                                                 filter_conditions={"repo": repo_filter} if repo_filter else None)
+            except Exception as e:
+                logger.warning("vector search failed for memory #%d: %s", r["id"], e)
+                continue
+
+            # Keep only code chunks (filter out memory-vs-memory hits) and cap
+            code_hits = [h for h in hits if h.metadata.get("chunk_level") != "memory"][:top_k]
+
+            seen = set()
+            for h in code_hits:
+                symbol = h.metadata.get("symbol", "") or ""
+                file = h.metadata.get("file", "") or ""
+                if not symbol and not file:
+                    continue
+                key = (symbol, file)
+                if key in seen:
+                    continue
+                seen.add(key)
+                self._memory_store._conn.execute(
+                    """INSERT OR IGNORE INTO memory_symbol_references
+                       (memory_id, symbol, file, line, repo, branch, source, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, 'vector-similarity', ?)""",
+                    (r["id"], symbol, file,
+                     int(h.metadata.get("start_line", 0)),
+                     h.metadata.get("repo", "") or r["repo"] or "",
+                     h.metadata.get("branch", "") or r["branch"] or "",
+                     now),
+                )
+                inserted_total += 1
+            processed += 1
+
+        self._memory_store._conn.commit()
+        return {
+            "memories_processed": processed,
+            "memories_skipped_empty": skipped_empty,
+            "refs_inserted": inserted_total,
+            "only_unlinked": only_unlinked,
+            "top_k": top_k,
+        }
 
     def _handle_get_branch_context(self, params: dict) -> dict:
         """Get current branch info + index stats from SQLite."""
