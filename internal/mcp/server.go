@@ -186,7 +186,7 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 	// 13. index_status
 	srv.AddTool(
 		mcplib.NewTool("index_status",
-			mcplib.WithDescription("Show index freshness and statistics per branch."),
+			mcplib.WithDescription("Show index freshness and statistics per (repo, branch). Lists every pair that has rows in graph_edges (the canonical source), enriched with index_state metadata when available. Pairs missing an index_state record are flagged with `phantom_branch=true` so callers know the metadata is stale."),
 			mcplib.WithString("repo", mcplib.Description("Repository path filter")),
 		),
 		s.handleIndexStatus,
@@ -206,8 +206,8 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 	// 15. memories_by_symbol — "what memories are about this code symbol?"
 	srv.AddTool(
 		mcplib.NewTool("memories_by_symbol",
-			mcplib.WithDescription("Find memories that reference a specific code symbol. Returns memories with their link_sources (files-field=exact file mention, content-mention=symbol named in content, vector-similarity=embedding match)."),
-			mcplib.WithString("symbol", mcplib.Required(), mcplib.Description("Full symbol id, e.g. 'path/file.ts::ClassName.method' or just 'methodName'")),
+			mcplib.WithDescription("Find memories that reference a specific code symbol. Returns memories with their link_sources: files-field=exact file mention, content-mention=symbol named in content, vector-similarity=embedding match. If no structural link is found, falls back to a LIKE search on memory files+content and marks those results as link_sources='inference' (less reliable)."),
+			mcplib.WithString("symbol", mcplib.Required(), mcplib.Description("Symbol id. Prefer bare names like 'methodName'; the full 'path/file.ts::ClassName.method' form often misses because the indexer currently stores Java/TS targets as bare names. The fallback LIKE search uses the short label (tail after '::' or '.').")),
 			mcplib.WithString("repo", mcplib.Description("Optional repo filter")),
 			mcplib.WithString("branch", mcplib.Description("Optional branch filter")),
 			mcplib.WithNumber("limit", mcplib.Description("Maximum results (default: 20)")),
@@ -237,8 +237,8 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 	// 18. impact_analysis — "if I change this symbol, what breaks?"
 	srv.AddTool(
 		mcplib.NewTool("impact_analysis",
-			mcplib.WithDescription("Trace the blast radius of a symbol — direct callers + callees, transitive counts up to a depth, affected files and hot files. Use BEFORE refactoring to understand the impact of a change."),
-			mcplib.WithString("symbol", mcplib.Required(), mcplib.Description("Full symbol id, e.g. 'src/foo.ts::Bar.baz' or 'parseBoolean'")),
+			mcplib.WithDescription("Trace the blast radius of a symbol — direct callers + callees, transitive counts up to a depth, affected files and hot files. Use BEFORE refactoring to understand the impact of a change. The response includes `matched_as` and `match_strategy` so you can tell whether the exact symbol or a bare-name fallback was used."),
+			mcplib.WithString("symbol", mcplib.Required(), mcplib.Description("Symbol to analyze. The method tries `symbol` first, then falls back to bare-name variants (e.g. 'Bar.baz' → 'baz'). For Java/TS this fallback is usually required because the indexer currently emits bare-name targets, not fully-qualified ones. For Python the exact name works directly.")),
 			mcplib.WithString("repo", mcplib.Required(), mcplib.Description("Repository")),
 			mcplib.WithString("branch", mcplib.Required(), mcplib.Description("Branch")),
 			mcplib.WithNumber("depth", mcplib.Description("BFS depth, 1..8 (default 3)")),

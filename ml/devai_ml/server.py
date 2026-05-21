@@ -1078,33 +1078,69 @@ class MLService:
         }
 
     def _handle_index_status(self, params: dict) -> dict:
-        """Get index status for all repos or a specific one."""
+        """Get index status for all repos or a specific one.
+
+        Listing strategy:
+          1. Pull the canonical (repo, branch) pairs straight from graph_edges
+             — that's where the data physically lives.
+          2. Enrich each row with the matching index_state record (model,
+             commit, indexed_at) when available. Pairs without an index_state
+             record are flagged `phantom_branch=true` so callers know the
+             metadata is stale.
+
+        This fixes the bug where index_status would skip a branch that has
+        edges in graph_edges but no companion row in index_state.
+        """
         repo_filter = params.get("repo")
 
+        # Source of truth: graph_edges
+        sql = "SELECT repo, branch, COUNT(*) AS edge_count FROM graph_edges"
+        params_sql: list[Any] = []
+        if repo_filter:
+            sql += " WHERE repo = ?"
+            params_sql.append(repo_filter)
+        sql += " GROUP BY repo, branch ORDER BY repo, branch"
+        rows = self._graph_store._conn.execute(sql, params_sql).fetchall()
+
         repos = []
-        for repo_path in self._get_indexed_repos():
-            if repo_filter and repo_filter != repo_path:
-                continue
-            branches = self._get_repo_branches(repo_path)
-            for br in branches:
-                record = self._index_store.get_last_indexed(repo_path, br)
-                if record:
-                    repos.append({
-                        "repo": repo_path,
-                        "name": repo_path.rstrip("/").split("/")[-1],
-                        "branch": br,
-                        "last_commit": record.last_commit,
-                        "model": record.model_name,
-                        "dimension": record.model_dimension,
-                        "files": record.file_count,
-                        "symbols": record.symbol_count,
-                        "chunks": record.chunk_count,
-                        "indexed_at": record.indexed_at,
-                        "status": "indexed",
-                    })
+        for r in rows:
+            repo_path = r[0]
+            br = r[1]
+            edge_count = r[2]
+            record = self._index_store.get_last_indexed(repo_path, br)
+            entry = {
+                "repo": repo_path,
+                "name": (repo_path or "").rstrip("/").split("/")[-1],
+                "branch": br,
+                "edge_count": edge_count,
+                "status": "indexed",
+                "phantom_branch": False,
+            }
+            if record:
+                entry.update({
+                    "last_commit": record.last_commit,
+                    "model": record.model_name,
+                    "dimension": record.model_dimension,
+                    "files": record.file_count,
+                    "symbols": record.symbol_count,
+                    "chunks": record.chunk_count,
+                    "indexed_at": record.indexed_at,
+                })
+            else:
+                # Edges exist but no index_state record → metadata drift.
+                entry["phantom_branch"] = True
+                entry["last_commit"] = None
+                entry["model"] = None
+                entry["dimension"] = None
+                entry["files"] = None
+                entry["symbols"] = None
+                entry["chunks"] = None
+                entry["indexed_at"] = None
+            repos.append(entry)
 
         return {
             "count": len(repos),
+            "phantom_count": sum(1 for r in repos if r["phantom_branch"]),
             "repos": repos,
         }
 

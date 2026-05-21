@@ -375,20 +375,72 @@ class SQLiteGraphStore:
 
         return all_edges
 
+    @staticmethod
+    def _resolve_symbol_variants(symbol: str) -> list[str]:
+        """Return candidate symbol forms from most-specific to most-generic.
+
+        Java/TS indexers today emit source IDs as `<file>::<unknown>` and
+        target IDs as bare names (`getLogger`, not the FQN). A caller passing
+        the documented `file::Class.method` form would get zero hits. We
+        generate fallback aliases so impact_analysis can retry with a shorter
+        form when the exact one matches nothing.
+
+        Examples:
+          'src/foo.ts::Bar.baz'  → ['src/foo.ts::Bar.baz', 'Bar.baz', 'baz']
+          'Bar.baz'              → ['Bar.baz', 'baz']
+          'baz'                  → ['baz']
+        """
+        if not symbol:
+            return []
+        variants = [symbol]
+        if "::" in symbol:
+            tail = symbol.rsplit("::", 1)[1]
+            if tail and tail not in variants:
+                variants.append(tail)
+        for v in list(variants):
+            if "." in v:
+                last = v.rsplit(".", 1)[1]
+                if last and last not in variants:
+                    variants.append(last)
+        return variants
+
     def impact_analysis(self, repo: str, branch: str, symbol: str,
                         depth: int = 3, kind: str = "calls") -> dict:
-        """Trace the impact radius of a symbol.
+        """Public entry point. Tries `symbol` first, then bare-name aliases,
+        until one returns non-empty. Adds `matched_as` and `match_strategy`
+        fields so callers know which form was actually found."""
+        if not symbol:
+            return {"error": "symbol is required"}
+        variants = self._resolve_symbol_variants(symbol)
+        last_result = None
+        for v in variants:
+            result = self._impact_analysis_one(repo, branch, v, depth, kind)
+            if isinstance(result, dict) and "error" not in result:
+                up = result.get("upstream", {}).get("total_symbols", 0)
+                down = result.get("downstream", {}).get("total_symbols", 0)
+                if up > 0 or down > 0:
+                    result["query_symbol"] = symbol
+                    result["matched_as"] = v
+                    result["match_strategy"] = "exact" if v == symbol else "bare-name-fallback"
+                    return result
+            last_result = result
+        if last_result is None or "error" in last_result:
+            last_result = {
+                "symbol": symbol, "repo": repo, "branch": branch, "depth": depth,
+                "upstream": {"total_symbols": 0, "symbols_by_depth": []},
+                "downstream": {"total_symbols": 0, "symbols_by_depth": []},
+                "blast_radius": {"total_symbols": 0, "total_edges": 0, "files_count": 0},
+                "hot_files": [], "direct_callers": [], "direct_callees": [],
+            }
+        last_result["query_symbol"] = symbol
+        last_result["matched_as"] = None
+        last_result["match_strategy"] = "none"
+        last_result["tried_variants"] = variants
+        return last_result
 
-        Computes two directional BFS up to `depth`:
-          - upstream (callers): follow target→source. Who depends on this?
-          - downstream (callees): follow source→target. What does this depend on?
-
-        Returns counts at each depth, the set of affected files,
-        and the hottest files in the blast radius (top by edge count).
-
-        `kind` filters edge kind ('calls', 'imports', or '' for any).
-        Use depth=1 to get just the direct neighborhood.
-        """
+    def _impact_analysis_one(self, repo: str, branch: str, symbol: str,
+                             depth: int = 3, kind: str = "calls") -> dict:
+        """Single-symbol BFS. Internal — use impact_analysis() instead."""
         if not symbol:
             return {"error": "symbol is required"}
         depth = max(1, min(int(depth), 8))
