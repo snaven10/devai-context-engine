@@ -246,6 +246,29 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 		),
 		s.handleImpactAnalysis,
 	)
+
+	// 19. search_routes — framework-aware route finder
+	srv.AddTool(
+		mcplib.NewTool("search_routes",
+			mcplib.WithDescription("Find HTTP routes (Quarkus/JAX-RS today) by path substring and/or filters. Useful for 'who handles POST /solicitudes?' style questions."),
+			mcplib.WithString("q", mcplib.Description("Path substring, e.g. 'solicitudes'")),
+			mcplib.WithString("framework", mcplib.Description("Framework filter, e.g. 'quarkus'")),
+			mcplib.WithString("http_method", mcplib.Description("HTTP method filter: GET, POST, PUT, DELETE...")),
+			mcplib.WithString("repo", mcplib.Description("Repo filter")),
+			mcplib.WithString("branch", mcplib.Description("Branch filter")),
+			mcplib.WithNumber("limit", mcplib.Description("Maximum results (default 50)")),
+		),
+		s.handleSearchRoutes,
+	)
+
+	// 20. routes_for_handler — reverse lookup
+	srv.AddTool(
+		mcplib.NewTool("routes_for_handler",
+			mcplib.WithDescription("Given a handler symbol (e.g. a Java method id), return the URL route(s) it exposes."),
+			mcplib.WithString("handler_symbol", mcplib.Required(), mcplib.Description("Full handler symbol id from graph_edges")),
+		),
+		s.handleRoutesForHandler,
+	)
 }
 
 // --- Argument helpers ---
@@ -870,6 +893,36 @@ func (s *Server) handleImpactAnalysis(ctx context.Context, request mcplib.CallTo
 	})
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("impact_analysis failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleSearchRoutes(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	params := map[string]interface{}{"limit": int(argFloat(a, "limit", 50))}
+	for _, k := range []string{"q", "framework", "http_method", "repo", "branch"} {
+		if v := argString(a, k, ""); v != "" {
+			params[k] = v
+		}
+	}
+	result, err := s.mlClient.Call("search_routes", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("search_routes failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleRoutesForHandler(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	handler := argString(a, "handler_symbol", "")
+	if handler == "" {
+		return mcplib.NewToolResultError("handler_symbol is required"), nil
+	}
+	result, err := s.mlClient.Call("routes_for_handler", map[string]interface{}{"handler_symbol": handler})
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("routes_for_handler failed: %v", err)), nil
 	}
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil
