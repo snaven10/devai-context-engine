@@ -233,6 +233,19 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 		),
 		s.handleMemoryRefs,
 	)
+
+	// 18. impact_analysis — "if I change this symbol, what breaks?"
+	srv.AddTool(
+		mcplib.NewTool("impact_analysis",
+			mcplib.WithDescription("Trace the blast radius of a symbol — direct callers + callees, transitive counts up to a depth, affected files and hot files. Use BEFORE refactoring to understand the impact of a change."),
+			mcplib.WithString("symbol", mcplib.Required(), mcplib.Description("Full symbol id, e.g. 'src/foo.ts::Bar.baz' or 'parseBoolean'")),
+			mcplib.WithString("repo", mcplib.Required(), mcplib.Description("Repository")),
+			mcplib.WithString("branch", mcplib.Required(), mcplib.Description("Branch")),
+			mcplib.WithNumber("depth", mcplib.Description("BFS depth, 1..8 (default 3)")),
+			mcplib.WithString("kind", mcplib.Description("Edge kind: calls (default), imports, or empty for any")),
+		),
+		s.handleImpactAnalysis,
+	)
 }
 
 // --- Argument helpers ---
@@ -449,6 +462,61 @@ func (s *Server) handleBuildContext(ctx context.Context, request mcplib.CallTool
 		}
 		contextBuf.WriteString(chunk)
 		tokensUsed += chunkTokens
+	}
+
+	// Step 3: Pull memories STRUCTURALLY linked to the files we just included
+	// (via memory_symbol_references). Catches knowledge that doesn't match the
+	// query semantically but is documented against this exact code.
+	{
+		seenFiles := map[string]bool{}
+		// Re-scan the chosen results to extract their files, top 5
+		for _, r := range results {
+			if len(seenFiles) >= 5 {
+				break
+			}
+			item, ok := r.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			file, _ := item["file"].(string)
+			if file == "" || seenFiles[file] {
+				continue
+			}
+			seenFiles[file] = true
+		}
+		seenMemories := map[float64]bool{}
+		for file := range seenFiles {
+			linked, err := s.mlClient.Call("memories_by_file", map[string]interface{}{
+				"file": file, "limit": 5,
+			})
+			if err != nil {
+				continue
+			}
+			lm, _ := linked.(map[string]interface{})
+			mems, _ := lm["memories"].([]interface{})
+			for _, mem := range mems {
+				mm, _ := mem.(map[string]interface{})
+				if mm == nil {
+					continue
+				}
+				idF, _ := mm["id"].(float64)
+				if seenMemories[idF] {
+					continue
+				}
+				seenMemories[idF] = true
+				title, _ := mm["title"].(string)
+				content, _ := mm["content"].(string)
+				srcs, _ := mm["link_sources"].(string)
+				note := fmt.Sprintf("// [linked memory · %s · about %s]\n// %s\n%s\n\n",
+					srcs, file, title, content)
+				noteTokens := len(note) / 4
+				if tokensUsed+noteTokens > maxTokens {
+					break
+				}
+				contextBuf.WriteString(note)
+				tokensUsed += noteTokens
+			}
+		}
 	}
 
 	return mcplib.NewToolResultText(contextBuf.String()), nil
@@ -781,6 +849,27 @@ func (s *Server) handleMemoryRefs(ctx context.Context, request mcplib.CallToolRe
 	result, err := s.mlClient.Call("memory_refs", map[string]interface{}{"id": id})
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("memory_refs failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleImpactAnalysis(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	symbol := argString(a, "symbol", "")
+	repo := argString(a, "repo", s.activeRepo)
+	branch := argString(a, "branch", s.activeBranch)
+	depth := int(argFloat(a, "depth", 3))
+	kind := argString(a, "kind", "calls")
+	if symbol == "" || repo == "" || branch == "" {
+		return mcplib.NewToolResultError("symbol, repo, and branch are required"), nil
+	}
+	result, err := s.mlClient.Call("impact_analysis", map[string]interface{}{
+		"symbol": symbol, "repo": repo, "branch": branch,
+		"depth": depth, "kind": kind,
+	})
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("impact_analysis failed: %v", err)), nil
 	}
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil

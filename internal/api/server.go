@@ -89,6 +89,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/v1/memory/backfill-vector-links", s.authMiddleware(s.handleBackfillVectorLinks))
 	s.mux.HandleFunc("GET /api/v1/graph/repos", s.authMiddleware(s.handleGraphRepos))
 	s.mux.HandleFunc("GET /api/v1/graph/symbol", s.authMiddleware(s.handleGraphSymbol))
+	s.mux.HandleFunc("GET /api/v1/graph/impact", s.authMiddleware(s.handleGraphImpact))
+	s.mux.HandleFunc("POST /api/v1/graph/fts-rebuild", s.authMiddleware(s.handleGraphFTSRebuild))
 	s.mux.HandleFunc("GET /api/v1/graph/search", s.authMiddleware(s.handleGraphSearch))
 	s.mux.HandleFunc("GET /api/v1/graph/{repo}", s.authMiddleware(s.handleGetGraph))
 	s.mux.HandleFunc("GET /api/v1/status", s.authMiddleware(s.handleStatus))
@@ -603,8 +605,9 @@ func (s *Server) handleGetGraph(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleGraphSearch finds nodes whose label matches a substring (used for the
-// "type a symbol → start exploring from it" flow). Returns up to 25 matches.
+// handleGraphSearch finds symbols matching a prefix via SQLite FTS5.
+// Falls back to LIKE substring matching if the FTS5 table is empty
+// (legacy index that hasn't been rebuilt yet).
 func (s *Server) handleGraphSearch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {
@@ -621,27 +624,49 @@ func (s *Server) handleGraphSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close()
 
-	sql := `SELECT DISTINCT symbol, repo, branch, file, line FROM (
-              SELECT source AS symbol, repo, branch, source_file AS file, line FROM graph_edges
-              UNION ALL
-              SELECT target AS symbol, repo, branch, source_file AS file, line FROM graph_edges
-            ) WHERE symbol LIKE ?`
-	args := []interface{}{"%" + q + "%"}
+	useFTS := false
+	var ftsRows int
+	_ = db.QueryRow("SELECT COUNT(*) FROM graph_symbols_fts").Scan(&ftsRows)
+	useFTS = ftsRows > 0
+
+	var sqlStr string
+	var args []interface{}
+	if useFTS {
+		// FTS5 MATCH: prefix search via "term*". We tokenize the query the
+		// same way the indexer pre-processes labels — split on non-alnum AND
+		// on camelCase boundaries — so 'BirthRecord' becomes
+		// 'Birth* AND Record*' and matches indexed 'mapDtoToBirthRecord'.
+		tokens := splitForFTS(q)
+		matchExpr := strings.Join(tokens, " AND ")
+		if matchExpr == "" {
+			matchExpr = q + "*"
+		}
+		sqlStr = `SELECT DISTINCT canonical AS symbol, repo, branch, source_file AS file, line
+                  FROM graph_symbols_fts WHERE label MATCH ?`
+		args = []interface{}{matchExpr}
+	} else {
+		sqlStr = `SELECT DISTINCT symbol, repo, branch, file, line FROM (
+                  SELECT source AS symbol, repo, branch, source_file AS file, line FROM graph_edges
+                  UNION ALL
+                  SELECT target AS symbol, repo, branch, source_file AS file, line FROM graph_edges
+                ) WHERE symbol LIKE ?`
+		args = []interface{}{"%" + q + "%"}
+	}
 	if len(repos) > 0 {
 		ph := strings.Repeat("?,", len(repos))
 		ph = ph[:len(ph)-1]
-		sql += " AND repo IN (" + ph + ")"
+		sqlStr += " AND repo IN (" + ph + ")"
 		for _, r := range repos {
 			args = append(args, r)
 		}
 	}
 	if branch != "" {
-		sql += " AND branch = ?"
+		sqlStr += " AND branch = ?"
 		args = append(args, branch)
 	}
-	sql += " ORDER BY symbol LIMIT 25"
+	sqlStr += " ORDER BY symbol LIMIT 25"
 
-	rows, err := db.Query(sql, args...)
+	rows, err := db.Query(sqlStr, args...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -666,7 +691,60 @@ func (s *Server) handleGraphSearch(w http.ResponseWriter, r *http.Request) {
 		m.Label = shortLabel(m.Symbol)
 		out = append(out, m)
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"matches": out})
+	mode := "like"
+	if useFTS {
+		mode = "fts5"
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"matches": out, "mode": mode})
+}
+
+// handleGraphFTSRebuild forces a rebuild of the graph_symbols_fts index.
+// Use after switching to a build that supports FTS5, or after a fresh index.
+func (s *Server) handleGraphFTSRebuild(w http.ResponseWriter, r *http.Request) {
+	force := r.URL.Query().Get("force") == "1"
+	result, err := s.ml.FTSRebuild(force)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleGraphImpact returns the impact radius of a symbol: direct callers/callees,
+// transitive counts up to depth, affected files and hot files.
+//
+// Query params (all required except depth/kind):
+//
+//	symbol  — full symbol id
+//	repo    — repository
+//	branch  — branch
+//	depth   — 1..8 (default 3)
+//	kind    — calls|imports|"" (default calls)
+func (s *Server) handleGraphImpact(w http.ResponseWriter, r *http.Request) {
+	symbol := r.URL.Query().Get("symbol")
+	repo := r.URL.Query().Get("repo")
+	branch := r.URL.Query().Get("branch")
+	if symbol == "" || repo == "" || branch == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "symbol, repo, branch query params are required",
+		})
+		return
+	}
+	depth := 3
+	if d := r.URL.Query().Get("depth"); d != "" {
+		fmt.Sscanf(d, "%d", &depth)
+	}
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = "calls"
+	}
+
+	result, err := s.ml.ImpactAnalysis(symbol, repo, branch, depth, kind)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // handleGraphSymbol returns the 1-hop neighborhood (callers + callees) of a symbol.
@@ -839,6 +917,53 @@ func buildCytoscape(rows *sql.Rows, hideExternal, hideSynthetic bool) ([]map[str
 func isSynthetic(id string) bool {
 	tail := shortLabel(id)
 	return tail == "<unknown>" || tail == "<module>" || tail == "<anonymous>"
+}
+
+// splitForFTS tokenizes a query the same way the indexer pre-processes symbols:
+// split on every non-alnum char AND at camelCase boundaries (Word|Word and
+// XML|Parser). Each token gets the FTS5 prefix marker '*'.
+func splitForFTS(q string) []string {
+	isAlnum := func(ch rune) bool {
+		return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '_'
+	}
+	isUpper := func(ch rune) bool { return ch >= 'A' && ch <= 'Z' }
+	isLowerOrDigit := func(ch rune) bool {
+		return (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')
+	}
+
+	runes := []rune(q)
+	tokens := []string{}
+	curr := ""
+	flush := func() {
+		if curr != "" {
+			tokens = append(tokens, curr+"*")
+			curr = ""
+		}
+	}
+	for i, ch := range runes {
+		if !isAlnum(ch) {
+			flush()
+			continue
+		}
+		// camelCase boundary 1: lowercase/digit followed by uppercase
+		if i > 0 && isLowerOrDigit(runes[i-1]) && isUpper(ch) {
+			flush()
+		}
+		// camelCase boundary 2: ABCdef → split at ABC | def (last upper before lower)
+		if i > 1 && isUpper(runes[i-1]) && isUpper(runes[i-2]) && !isUpper(ch) {
+			// move the last char of curr (the boundary upper) into a new token
+			if len(curr) > 0 {
+				last := curr[len(curr)-1]
+				curr = curr[:len(curr)-1]
+				flush()
+				curr = string(last)
+			}
+		}
+		curr += string(ch)
+	}
+	flush()
+	return tokens
 }
 
 // shortLabel keeps node labels readable in the UI: strips path prefix before "::".

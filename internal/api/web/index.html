@@ -552,7 +552,41 @@ function showNodeInfo(n) {
       Object.entries(incBy).map(([k,n]) => pill(k+' in', n)).join('') +
       Object.entries(outBy).map(([k,n]) => pill(k+' out', n)).join('') +
     `</div>` +
-    `<div class="meta" style="margin-top:8px">double-click to expand from here</div>`;
+    `<div class="meta" style="margin-top:8px">double-click to expand · click "impact" below to trace blast radius</div>` +
+    `<div id="impactBox" style="margin-top:8px">
+       <button id="impactBtn" class="mini" style="font-size:11px">analyze impact (depth 3)</button>
+       <div id="impactResult" class="stat" style="margin-top:6px"></div>
+     </div>`;
+  const btn = $('impactBtn');
+  if (btn) btn.addEventListener('click', () => loadImpact(n.data('fullId'), n.data('repo')));
+}
+
+async function loadImpact(fullSymbol, repo) {
+  const branch = $('branch').value;
+  if (!fullSymbol || !branch) { $('impactResult').textContent = 'need a symbol and a branch'; return; }
+  $('impactResult').textContent = 'analyzing…';
+  try {
+    const qs = new URLSearchParams({ symbol: fullSymbol, branch, depth: '3', kind: 'calls' });
+    if (repo) qs.set('repo', repo);
+    const r = await getJSON('/api/v1/graph/impact?' + qs);
+    if (r.error) { $('impactResult').innerHTML = `<span class="err">${r.error}</span>`; return; }
+    const br = r.blast_radius || {};
+    const up = r.upstream || {};
+    const down = r.downstream || {};
+    const hot = (r.hot_files || []).slice(0, 3).map(h =>
+      `<div class="meta">· ${escapeHTML(h.file)} (${h.edges} edges)</div>`).join('');
+    $('impactResult').innerHTML = `
+      <div style="margin-top:4px">
+        <span class="pill" title="symbols that depend on this one (upstream BFS)">callers ≤3 hops: ${up.total_symbols||0}</span>
+        <span class="pill" title="symbols this one depends on (downstream BFS)">callees ≤3 hops: ${down.total_symbols||0}</span>
+      </div>
+      <div style="margin-top:4px">
+        <span class="pill">total symbols: ${br.total_symbols||0}</span>
+        <span class="pill">files: ${br.files_count||0}</span>
+        <span class="pill">edges: ${br.total_edges||0}</span>
+      </div>
+      ${hot ? `<div class="meta" style="margin-top:6px"><strong>hot files</strong></div>${hot}` : ''}`;
+  } catch (e) { $('impactResult').innerHTML = `<span class="err">${e.message}</span>`; }
 }
 
 async function searchSymbols() {

@@ -297,6 +297,20 @@ func (c *StdioClient) MemoryRefs(memoryID int) (interface{}, error) {
 	return c.Call("memory_refs", map[string]interface{}{"id": memoryID})
 }
 
+// ImpactAnalysis traces upstream callers + downstream callees of a symbol.
+// depth caps the BFS (1=direct only). kind = "calls" | "imports" | "" (any).
+func (c *StdioClient) ImpactAnalysis(symbol, repo, branch string, depth int, kind string) (interface{}, error) {
+	return c.Call("impact_analysis", map[string]interface{}{
+		"symbol": symbol, "repo": repo, "branch": branch,
+		"depth": depth, "kind": kind,
+	})
+}
+
+// FTSRebuild populates (or rebuilds) the graph_symbols_fts index.
+func (c *StdioClient) FTSRebuild(force bool) (interface{}, error) {
+	return c.Call("fts_rebuild", map[string]interface{}{"force": force})
+}
+
 // SymbolMemoryCounts returns {symbol: count} for the heatmap overlay.
 func (c *StdioClient) SymbolMemoryCounts(repo, branch string) (interface{}, error) {
 	p := map[string]interface{}{}

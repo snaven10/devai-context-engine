@@ -147,6 +147,8 @@ class MLService:
             "memories_by_file": self._handle_memories_by_file,
             "symbol_memory_counts": self._handle_symbol_memory_counts,
             "memory_refs": self._handle_memory_refs,
+            "impact_analysis": self._handle_impact_analysis,
+            "fts_rebuild": self._handle_fts_rebuild,
             "backfill_symbol_refs": self._handle_backfill_symbol_refs,
             "backfill_vector_links": self._handle_backfill_vector_links,
             "get_branch_context": self._handle_get_branch_context,
@@ -678,6 +680,25 @@ class MLService:
             d["link_sources"] = link_sources
             out.append(d)
         return {"file": file, "count": len(out), "memories": out}
+
+    def _handle_fts_rebuild(self, params: dict) -> dict:
+        """Rebuild graph_symbols_fts from current graph_edges.
+        Run once after upgrading to a build that supports FTS5 symbol search,
+        or after a fresh index from scratch."""
+        force = bool(params.get("force", False))
+        return self._graph_store.populate_fts(force=force)
+
+    def _handle_impact_analysis(self, params: dict) -> dict:
+        """Trace upstream callers + downstream callees for a symbol up to `depth`.
+        Returns direct neighbors, transitive counts, files affected, hot files."""
+        symbol = params.get("symbol", "")
+        repo = params.get("repo", "")
+        branch = params.get("branch", "")
+        depth = int(params.get("depth", 3))
+        kind = params.get("kind", "calls")
+        if not symbol or not repo or not branch:
+            return {"error": "symbol, repo, and branch are required"}
+        return self._graph_store.impact_analysis(repo, branch, symbol, depth=depth, kind=kind)
 
     def _handle_memory_refs(self, params: dict) -> dict:
         """Junction rows for a single memory: which symbols and files it references."""
