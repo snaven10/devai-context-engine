@@ -91,6 +91,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/graph/symbol", s.authMiddleware(s.handleGraphSymbol))
 	s.mux.HandleFunc("GET /api/v1/graph/impact", s.authMiddleware(s.handleGraphImpact))
 	s.mux.HandleFunc("POST /api/v1/graph/fts-rebuild", s.authMiddleware(s.handleGraphFTSRebuild))
+	s.mux.HandleFunc("GET /api/v1/routes", s.authMiddleware(s.handleSearchRoutes))
+	s.mux.HandleFunc("GET /api/v1/routes/by-handler", s.authMiddleware(s.handleRoutesForHandler))
+	s.mux.HandleFunc("POST /api/v1/routes/extract/quarkus", s.authMiddleware(s.handleExtractQuarkusRoutes))
+	s.mux.HandleFunc("POST /api/v1/routes/extract", s.authMiddleware(s.handleExtractRoutes))
 	s.mux.HandleFunc("GET /api/v1/graph/search", s.authMiddleware(s.handleGraphSearch))
 	s.mux.HandleFunc("GET /api/v1/graph/{repo}", s.authMiddleware(s.handleGetGraph))
 	s.mux.HandleFunc("GET /api/v1/status", s.authMiddleware(s.handleStatus))
@@ -696,6 +700,82 @@ func (s *Server) handleGraphSearch(w http.ResponseWriter, r *http.Request) {
 		mode = "fts5"
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"matches": out, "mode": mode})
+}
+
+// handleSearchRoutes finds routes by path substring + filters.
+// Query params: q, framework, http_method, repo, branch, limit.
+func (s *Server) handleSearchRoutes(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("q")
+	framework := r.URL.Query().Get("framework")
+	httpMethod := r.URL.Query().Get("http_method")
+	repo := r.URL.Query().Get("repo")
+	branch := r.URL.Query().Get("branch")
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+	result, err := s.ml.SearchRoutes(q, framework, httpMethod, repo, branch, limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleRoutesForHandler returns the route(s) a given handler symbol serves.
+func (s *Server) handleRoutesForHandler(w http.ResponseWriter, r *http.Request) {
+	handler := r.URL.Query().Get("handler_symbol")
+	if handler == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "handler_symbol required"})
+		return
+	}
+	result, err := s.ml.RoutesForHandler(handler)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleExtractRoutes is the generic dispatcher. Picks the extractor per
+// `framework` query param.
+// Required: framework, repo, branch. Optional: source_root.
+func (s *Server) handleExtractRoutes(w http.ResponseWriter, r *http.Request) {
+	framework := r.URL.Query().Get("framework")
+	repo := r.URL.Query().Get("repo")
+	branch := r.URL.Query().Get("branch")
+	sourceRoot := r.URL.Query().Get("source_root")
+	if framework == "" || repo == "" || branch == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "framework, repo, branch are required (supported frameworks: quarkus, spring, fastapi, flask, express, nestjs, angular)",
+		})
+		return
+	}
+	result, err := s.ml.ExtractRoutes(framework, repo, branch, sourceRoot)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleExtractQuarkusRoutes scans Java files of a repo+branch and persists
+// any Quarkus/JAX-RS routes it finds.
+// Query params: repo (required), branch (required), source_root (optional).
+func (s *Server) handleExtractQuarkusRoutes(w http.ResponseWriter, r *http.Request) {
+	repo := r.URL.Query().Get("repo")
+	branch := r.URL.Query().Get("branch")
+	if repo == "" || branch == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repo and branch are required"})
+		return
+	}
+	sourceRoot := r.URL.Query().Get("source_root")
+	result, err := s.ml.ExtractQuarkusRoutes(repo, branch, sourceRoot)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // handleGraphFTSRebuild forces a rebuild of the graph_symbols_fts index.

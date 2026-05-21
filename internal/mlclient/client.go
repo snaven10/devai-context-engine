@@ -311,6 +311,53 @@ func (c *StdioClient) FTSRebuild(force bool) (interface{}, error) {
 	return c.Call("fts_rebuild", map[string]interface{}{"force": force})
 }
 
+// ExtractQuarkusRoutes scans the indexed .java files of (repo, branch) and
+// persists Quarkus/JAX-RS REST routes. sourceRoot is the absolute on-disk
+// path of the repo; pass "" to let the Python side auto-detect.
+func (c *StdioClient) ExtractQuarkusRoutes(repo, branch, sourceRoot string) (interface{}, error) {
+	p := map[string]interface{}{"repo": repo, "branch": branch}
+	if sourceRoot != "" {
+		p["source_root"] = sourceRoot
+	}
+	return c.Call("extract_quarkus_routes", p)
+}
+
+// ExtractRoutes is the generic dispatcher. framework ∈
+// quarkus|spring|fastapi|flask|express|nestjs|angular.
+func (c *StdioClient) ExtractRoutes(framework, repo, branch, sourceRoot string) (interface{}, error) {
+	p := map[string]interface{}{"framework": framework, "repo": repo, "branch": branch}
+	if sourceRoot != "" {
+		p["source_root"] = sourceRoot
+	}
+	return c.Call("extract_routes", p)
+}
+
+// SearchRoutes finds routes matching a path substring + optional filters.
+func (c *StdioClient) SearchRoutes(q, framework, httpMethod, repo, branch string, limit int) (interface{}, error) {
+	p := map[string]interface{}{"limit": limit}
+	if q != "" {
+		p["q"] = q
+	}
+	if framework != "" {
+		p["framework"] = framework
+	}
+	if httpMethod != "" {
+		p["http_method"] = httpMethod
+	}
+	if repo != "" {
+		p["repo"] = repo
+	}
+	if branch != "" {
+		p["branch"] = branch
+	}
+	return c.Call("search_routes", p)
+}
+
+// RoutesForHandler returns the route(s) served by a given Java handler symbol.
+func (c *StdioClient) RoutesForHandler(handlerSymbol string) (interface{}, error) {
+	return c.Call("routes_for_handler", map[string]interface{}{"handler_symbol": handlerSymbol})
+}
+
 // SymbolMemoryCounts returns {symbol: count} for the heatmap overlay.
 func (c *StdioClient) SymbolMemoryCounts(repo, branch string) (interface{}, error) {
 	p := map[string]interface{}{}
