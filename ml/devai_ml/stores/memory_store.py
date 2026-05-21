@@ -333,8 +333,14 @@ class MemoryStore:
                            limit: int = 20) -> list[tuple[Memory, str]]:
         """Return [(memory, link_sources)] for memories referencing the symbol.
 
-        link_sources is a CSV like 'files-field,content-mention'. The frontend
-        picks the highest-precedence one for badging.
+        Two-stage lookup:
+          1. Exact JOIN against memory_symbol_references — returns rows whose
+             link_sources reflect HOW the link was established (files-field,
+             content-mention, vector-similarity).
+          2. If stage 1 returns nothing, fall back to a LIKE search over
+             memories.files and memories.content using the symbol's short
+             label (tail after `::` or `.`). Hits get link_sources='inference'
+             so callers can tell the difference from structural matches.
         """
         conds = ["msr.symbol = ?", "m.deleted_at IS NULL"]
         params: list[Any] = [symbol]
@@ -354,7 +360,34 @@ class MemoryStore:
                 ORDER BY m.updated_at DESC LIMIT ?""",
             params,
         ).fetchall()
-        return [(self._row_to_memory(r), r["link_sources"] or "") for r in rows]
+        if rows:
+            return [(self._row_to_memory(r), r["link_sources"] or "") for r in rows]
+
+        # Stage 2 — LIKE fallback. Derive a short, queryable label.
+        short = self._short_label(symbol)
+        if len(short) < 3:
+            return []
+        pattern = f"%{short}%"
+        fb_conds = [
+            "m.deleted_at IS NULL",
+            "(m.files LIKE ? OR m.content LIKE ?)",
+        ]
+        fb_params: list[Any] = [pattern, pattern]
+        # Optional repo/branch narrowing on the memory side
+        if repo:
+            fb_conds.append("m.repo = ?")
+            fb_params.append(repo)
+        if branch:
+            fb_conds.append("m.branch = ?")
+            fb_params.append(branch)
+        fb_params.append(limit)
+        fb_rows = self._conn.execute(
+            f"""SELECT m.* FROM memories m
+                WHERE {' AND '.join(fb_conds)}
+                ORDER BY m.updated_at DESC LIMIT ?""",
+            fb_params,
+        ).fetchall()
+        return [(self._row_to_memory(r), "inference") for r in fb_rows]
 
     def memories_by_file(self, file: str, limit: int = 20) -> list[tuple[Memory, str]]:
         """Return [(memory, link_sources)] for memories referencing the file."""
