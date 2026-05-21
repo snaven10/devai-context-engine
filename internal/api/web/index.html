@@ -626,7 +626,7 @@ function showPane(name) {
 
 async function loadMemories() {
   const repos = selectedRepos();
-  const project = repos[0] || 'REVFA';
+  const project = repos[0] || '';
   const q = $('memSearch').value.trim();
   const qs = new URLSearchParams({ limit: '20' });
   if (q) qs.set('q', q);
