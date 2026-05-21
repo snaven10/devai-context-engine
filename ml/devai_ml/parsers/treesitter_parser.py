@@ -347,10 +347,136 @@ class TreeSitterLanguageParser:
 
         return imports
 
+    # Per-language AST node types that act as containers we want to attribute
+    # calls to. Each entry has `method` (function-like containers) and `class`
+    # (type-like containers). When a call site is nested inside both, the
+    # source id is `ClassName.methodName`; otherwise just whichever was found.
+    _CONTAINER_NODE_TYPES: dict[str, dict[str, set[str]]] = {
+        "java": {
+            "method": {"method_declaration", "constructor_declaration"},
+            "class":  {"class_declaration", "interface_declaration",
+                       "enum_declaration", "record_declaration",
+                       "annotation_type_declaration"},
+        },
+        "typescript": {
+            "method": {"method_definition", "function_declaration",
+                       "function_expression", "arrow_function",
+                       "generator_function_declaration"},
+            "class":  {"class_declaration", "interface_declaration",
+                       "abstract_class_declaration"},
+        },
+        "javascript": {
+            "method": {"method_definition", "function_declaration",
+                       "function_expression", "arrow_function",
+                       "generator_function_declaration"},
+            "class":  {"class_declaration"},
+        },
+        "python": {
+            "method": {"function_definition"},
+            "class":  {"class_definition"},
+        },
+        "go": {
+            "method": {"function_declaration", "method_declaration"},
+            "class":  set(),  # Go has no class concept
+        },
+        "rust": {
+            "method": {"function_item"},
+            "class":  {"impl_item", "trait_item"},
+        },
+        "ruby": {
+            "method": {"method", "singleton_method"},
+            "class":  {"class", "module"},
+        },
+        "php": {
+            "method": {"method_declaration", "function_definition"},
+            "class":  {"class_declaration", "interface_declaration",
+                       "trait_declaration"},
+        },
+    }
+
+    def _find_enclosing_symbol(self, node: Any, source: bytes | str) -> str | None:
+        """Walk up the AST until a method and/or class container is found.
+
+        Returns:
+            "ClassName.methodName"  when nested inside both
+            "methodName"            when only a function/method container is found
+            "ClassName"             when only a type container is found (rare)
+            None                    when the call lives at file/module top level
+        """
+        types = self._CONTAINER_NODE_TYPES.get(self._language)
+        if not types:
+            return None
+        method_types = types.get("method", set())
+        class_types = types.get("class", set())
+
+        method_name: str | None = None
+        class_name: str | None = None
+
+        cur = node.parent if hasattr(node, "parent") else None
+        while cur is not None:
+            t = cur.type
+            if method_name is None and t in method_types:
+                name = self._node_field_text(cur, "name", source)
+                # Anonymous arrow/function expressions take the name of their
+                # enclosing variable_declarator (TS/JS idiom `const x = () => {}`).
+                if not name and t in ("arrow_function", "function_expression"):
+                    parent = cur.parent
+                    if parent is not None and parent.type == "variable_declarator":
+                        name = self._node_field_text(parent, "name", source)
+                if name:
+                    method_name = name
+            if class_name is None and t in class_types:
+                name = self._node_field_text(cur, "name", source)
+                if name:
+                    class_name = name
+            if method_name and class_name:
+                break
+            cur = cur.parent if hasattr(cur, "parent") else None
+
+        if method_name and class_name:
+            return f"{class_name}.{method_name}"
+        if method_name:
+            return method_name
+        if class_name:
+            return class_name
+        return None
+
+    @staticmethod
+    def _node_field_text(node: Any, field_name: str, source: bytes | str) -> str | None:
+        """Read the text of a tree-sitter field child. Returns None if missing."""
+        if node is None:
+            return None
+        try:
+            child = node.child_by_field_name(field_name)
+        except Exception:
+            return None
+        if child is None:
+            return None
+        chunk = source[child.start_byte:child.end_byte]
+        if isinstance(chunk, bytes):
+            return chunk.decode("utf-8", errors="replace")
+        return chunk
+
+    def _container_source_id(self, node: Any, source: bytes | str, file_path: str) -> str:
+        """Produce the source-side id for a call edge.
+
+        Walks up from the call node to find its containing method/class.
+        Falls back to `<unknown>` only when truly at file scope (e.g. top-level
+        statements in Python, static initializers in Java).
+        """
+        enclosing = self._find_enclosing_symbol(node, source)
+        if enclosing:
+            return f"{file_path}::{enclosing}"
+        return f"{file_path}::<unknown>"
+
     def _extract_calls_via_query(
         self, tree: Any, source: str, file_path: str
     ) -> list[GraphEdge]:
-        """Extract function calls using .scm query file (tree-sitter 0.25+ API)."""
+        """Extract function calls using .scm query file (tree-sitter 0.25+ API).
+
+        Each call edge's `source` is resolved to the symbol that physically
+        encloses the call (Class.method), not a generic file-level placeholder.
+        """
         import tree_sitter
 
         edges: list[GraphEdge] = []
@@ -364,7 +490,7 @@ class TreeSitterLanguageParser:
                     for node in nodes:
                         call_name = self._node_text(node, source)
                         edges.append(GraphEdge(
-                            source=f"{file_path}::<unknown>",
+                            source=self._container_source_id(node, source, file_path),
                             target=call_name,
                             kind="calls",
                             file_path=file_path,
@@ -482,7 +608,10 @@ class TreeSitterLanguageParser:
     def _extract_calls_via_walk(
         self, tree: Any, source: str, file_path: str
     ) -> list[GraphEdge]:
-        """Extract function calls by walking AST. Fallback."""
+        """Extract function calls by walking AST. Fallback used when no
+        per-language .scm query is configured. Resolves the enclosing
+        container the same way as _extract_calls_via_query.
+        """
         edges: list[GraphEdge] = []
 
         def walk(node: Any) -> None:
@@ -491,7 +620,7 @@ class TreeSitterLanguageParser:
                 if func_node:
                     call_name = self._node_text(func_node, source)
                     edges.append(GraphEdge(
-                        source=f"{file_path}::<unknown>",
+                        source=self._container_source_id(node, source, file_path),
                         target=call_name,
                         kind="calls",
                         file_path=file_path,
