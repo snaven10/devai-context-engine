@@ -94,6 +94,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/v1/routes", s.authMiddleware(s.handleSearchRoutes))
 	s.mux.HandleFunc("GET /api/v1/routes/by-handler", s.authMiddleware(s.handleRoutesForHandler))
 	s.mux.HandleFunc("POST /api/v1/routes/extract/quarkus", s.authMiddleware(s.handleExtractQuarkusRoutes))
+	s.mux.HandleFunc("POST /api/v1/routes/extract", s.authMiddleware(s.handleExtractRoutes))
 	s.mux.HandleFunc("GET /api/v1/graph/search", s.authMiddleware(s.handleGraphSearch))
 	s.mux.HandleFunc("GET /api/v1/graph/{repo}", s.authMiddleware(s.handleGetGraph))
 	s.mux.HandleFunc("GET /api/v1/status", s.authMiddleware(s.handleStatus))
@@ -729,6 +730,28 @@ func (s *Server) handleRoutesForHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	result, err := s.ml.RoutesForHandler(handler)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleExtractRoutes is the generic dispatcher. Picks the extractor per
+// `framework` query param.
+// Required: framework, repo, branch. Optional: source_root.
+func (s *Server) handleExtractRoutes(w http.ResponseWriter, r *http.Request) {
+	framework := r.URL.Query().Get("framework")
+	repo := r.URL.Query().Get("repo")
+	branch := r.URL.Query().Get("branch")
+	sourceRoot := r.URL.Query().Get("source_root")
+	if framework == "" || repo == "" || branch == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "framework, repo, branch are required (supported frameworks: quarkus, spring, fastapi, flask, express, nestjs, angular)",
+		})
+		return
+	}
+	result, err := s.ml.ExtractRoutes(framework, repo, branch, sourceRoot)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
