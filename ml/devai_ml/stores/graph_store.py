@@ -59,6 +59,29 @@ class SQLiteGraphStore:
     CREATE INDEX IF NOT EXISTS idx_edges_target ON graph_edges(repo, branch, target);
     CREATE INDEX IF NOT EXISTS idx_edges_source_file ON graph_edges(repo, branch, source_file);
 
+    -- Framework-aware routes table. Populated by route extractors per
+    -- framework (today: Quarkus/JAX-RS; future: Spring, Angular, Express).
+    -- Lets the UI / agent answer "what handler serves POST /solicitudes?"
+    -- and "given this Java method, what URL does it expose?".
+    CREATE TABLE IF NOT EXISTS routes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        framework      TEXT NOT NULL,                -- 'quarkus' | 'spring' | 'angular' | ...
+        http_method    TEXT NOT NULL DEFAULT '',     -- 'GET' | 'POST' | ... or '' for non-HTTP
+        path           TEXT NOT NULL,                -- full URL path e.g. '/solicitudes/{id}'
+        handler_class  TEXT NOT NULL DEFAULT '',     -- e.g. 'SolicitudesResource'
+        handler_method TEXT NOT NULL DEFAULT '',     -- e.g. 'getById'
+        handler_symbol TEXT NOT NULL DEFAULT '',     -- canonical id matching graph_edges
+        file           TEXT NOT NULL,
+        line           INTEGER NOT NULL DEFAULT 0,
+        repo           TEXT NOT NULL DEFAULT '',
+        branch         TEXT NOT NULL DEFAULT '',
+        indexed_at     TEXT NOT NULL,
+        UNIQUE(framework, http_method, path, repo, branch)
+    );
+    CREATE INDEX IF NOT EXISTS idx_routes_path    ON routes(path);
+    CREATE INDEX IF NOT EXISTS idx_routes_handler ON routes(handler_symbol);
+    CREATE INDEX IF NOT EXISTS idx_routes_repo    ON routes(repo, branch);
+
     -- FTS5 virtual table for fast symbol/file search.
     -- canonical / file / repo / branch / line are UNINDEXED metadata (no FTS cost).
     -- `label` is the searchable column: the tokenizer breaks symbol ids on
@@ -150,6 +173,74 @@ class SQLiteGraphStore:
         if expanded == symbol:
             return symbol
         return f"{symbol} {expanded}"
+
+    def add_routes(self, routes: list[dict]) -> int:
+        """Upsert a batch of Route records. Idempotent via UNIQUE constraint."""
+        if not routes:
+            return 0
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [
+            (r["framework"], r["http_method"], r["path"],
+             r["handler_class"], r["handler_method"], r["handler_symbol"],
+             r["file"], r["line"], r["repo"], r["branch"], now)
+            for r in routes
+        ]
+        self._conn.executemany(
+            """INSERT OR REPLACE INTO routes
+               (framework, http_method, path, handler_class, handler_method,
+                handler_symbol, file, line, repo, branch, indexed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+        self._conn.commit()
+        return len(rows)
+
+    def search_routes(self, q: str = "", framework: str = "", http_method: str = "",
+                      repo: str = "", branch: str = "", limit: int = 50) -> list[dict]:
+        """Find routes by path substring + optional filters."""
+        conds = []
+        params: list[Any] = []
+        if q:
+            conds.append("path LIKE ?")
+            params.append(f"%{q}%")
+        if framework:
+            conds.append("framework = ?")
+            params.append(framework)
+        if http_method:
+            conds.append("http_method = ?")
+            params.append(http_method)
+        if repo:
+            conds.append("repo = ?")
+            params.append(repo)
+        if branch:
+            conds.append("branch = ?")
+            params.append(branch)
+        where = " WHERE " + " AND ".join(conds) if conds else ""
+        params.append(limit)
+        rows = self._conn.execute(
+            f"""SELECT framework, http_method, path, handler_class, handler_method,
+                       handler_symbol, file, line, repo, branch, indexed_at
+                FROM routes{where}
+                ORDER BY path LIMIT ?""",
+            params,
+        ).fetchall()
+        cols = ["framework", "http_method", "path", "handler_class", "handler_method",
+                "handler_symbol", "file", "line", "repo", "branch", "indexed_at"]
+        return [dict(zip(cols, r)) for r in rows]
+
+    def routes_for_handler(self, handler_symbol: str) -> list[dict]:
+        """Reverse lookup: given a Java method, which URL(s) does it expose?"""
+        rows = self._conn.execute(
+            """SELECT framework, http_method, path, handler_class, handler_method,
+                      handler_symbol, file, line, repo, branch
+               FROM routes WHERE handler_symbol = ?
+               ORDER BY http_method, path""",
+            (handler_symbol,),
+        ).fetchall()
+        cols = ["framework", "http_method", "path", "handler_class", "handler_method",
+                "handler_symbol", "file", "line", "repo", "branch"]
+        return [dict(zip(cols, r)) for r in rows]
 
     def populate_fts(self, force: bool = False) -> dict:
         """Rebuild graph_symbols_fts from current graph_edges. Idempotent.

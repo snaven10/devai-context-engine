@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -149,6 +150,10 @@ class MLService:
             "memory_refs": self._handle_memory_refs,
             "impact_analysis": self._handle_impact_analysis,
             "fts_rebuild": self._handle_fts_rebuild,
+            "extract_quarkus_routes": self._handle_extract_quarkus_routes,
+            "extract_routes": self._handle_extract_routes,
+            "search_routes": self._handle_search_routes,
+            "routes_for_handler": self._handle_routes_for_handler,
             "backfill_symbol_refs": self._handle_backfill_symbol_refs,
             "backfill_vector_links": self._handle_backfill_vector_links,
             "get_branch_context": self._handle_get_branch_context,
@@ -680,6 +685,206 @@ class MLService:
             d["link_sources"] = link_sources
             out.append(d)
         return {"file": file, "count": len(out), "memories": out}
+
+    def _handle_extract_routes(self, params: dict) -> dict:
+        """Generic dispatcher. Picks the right extractor per framework, scans
+        the indexed files of (repo, branch) on disk, and persists every route.
+
+        Frameworks supported today: quarkus, spring, fastapi, flask, express,
+        nestjs, angular.
+        """
+        from pathlib import Path
+        from .parsers import (
+            quarkus_routes, spring_routes, fastapi_routes, flask_routes,
+            express_routes, nest_routes, angular_routes,
+        )
+
+        EXTRACTORS = {
+            "quarkus":  quarkus_routes,
+            "spring":   spring_routes,
+            "fastapi":  fastapi_routes,
+            "flask":    flask_routes,
+            "express":  express_routes,
+            "nestjs":   nest_routes,
+            "angular":  angular_routes,
+        }
+
+        framework = params.get("framework", "")
+        if framework not in EXTRACTORS:
+            return {
+                "error": f"unknown framework '{framework}'",
+                "supported": sorted(EXTRACTORS.keys()),
+            }
+        repo = params.get("repo", "")
+        branch = params.get("branch", "")
+        if not repo or not branch:
+            return {"error": "repo and branch are required"}
+        source_root_param = params.get("source_root", "")
+
+        mod = EXTRACTORS[framework]
+        exts = tuple(getattr(mod, "EXTENSIONS", ()))
+        if not exts:
+            return {"error": f"extractor '{framework}' missing EXTENSIONS"}
+
+        # Pull indexed source files for this repo+branch matching the extensions
+        like_clauses = " OR ".join(["source_file LIKE ?"] * len(exts))
+        like_params = [f"%{e}" for e in exts]
+        files = self._graph_store._conn.execute(
+            f"""SELECT DISTINCT source_file FROM graph_edges
+                WHERE repo = ? AND branch = ? AND ({like_clauses})""",
+            (repo, branch, *like_params),
+        ).fetchall()
+        target_files = [r[0] for r in files]
+
+        # Resolve on-disk repo root
+        candidates = []
+        if source_root_param:
+            candidates.append(Path(source_root_param))
+        candidates.append(Path.cwd() / repo)
+        candidates.append(Path.cwd().parent / repo)
+        state_dir_env = os.environ.get("DEVAI_STATE_DIR", "")
+        if state_dir_env:
+            candidates.append(Path(state_dir_env).parent.parent / repo)
+        roots = [c for c in candidates if c.exists()]
+        if not roots:
+            return {"error": f"could not locate '{repo}' on disk; pass source_root explicitly",
+                    "tried": [str(c) for c in candidates]}
+        root = roots[0]
+
+        scanned = 0
+        skipped_missing = 0
+        all_routes: list[dict] = []
+
+        for rel_path in target_files:
+            full = root / rel_path
+            if not full.exists():
+                skipped_missing += 1
+                continue
+            try:
+                content = full.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                skipped_missing += 1
+                continue
+            scanned += 1
+            for r in mod.extract(content, rel_path):
+                all_routes.append({
+                    "framework": r.framework, "http_method": r.http_method,
+                    "path": r.path, "handler_class": r.handler_class,
+                    "handler_method": r.handler_method,
+                    "handler_symbol": r.handler_symbol,
+                    "file": r.file, "line": r.line,
+                    "repo": repo, "branch": branch,
+                })
+
+        inserted = self._graph_store.add_routes(all_routes)
+        return {
+            "framework": framework, "repo": repo, "branch": branch,
+            "source_root": str(root),
+            "files_indexed": len(target_files),
+            "files_scanned": scanned,
+            "files_missing_on_disk": skipped_missing,
+            "routes_extracted": len(all_routes),
+            "routes_persisted": inserted,
+        }
+
+    def _handle_extract_quarkus_routes(self, params: dict) -> dict:
+        """LEGACY: kept for backward compatibility. Delegates to extract_routes
+        with framework='quarkus'. New code should call extract_routes directly."""
+        return self._handle_extract_routes({**params, "framework": "quarkus"})
+
+    def _handle_extract_quarkus_routes_legacy_impl(self, params: dict) -> dict:
+        """Old standalone implementation; preserved only because tests reference it.
+        Not registered."""
+        from pathlib import Path
+        from .parsers.quarkus_routes import extract_quarkus_routes
+
+        repo = params.get("repo", "")
+        branch = params.get("branch", "")
+        if not repo or not branch:
+            return {"error": "repo and branch are required"}
+        source_root = params.get("source_root", "")
+
+        # Find indexed .java files for this repo+branch via graph_store
+        files = self._graph_store._conn.execute(
+            """SELECT DISTINCT source_file FROM graph_edges
+               WHERE repo = ? AND branch = ? AND source_file LIKE '%.java'""",
+            (repo, branch),
+        ).fetchall()
+        java_files = [r[0] for r in files]
+
+        total_routes = 0
+        scanned = 0
+        skipped_missing = 0
+        all_routes: list[dict] = []
+
+        # Resolve the on-disk root. If source_root not given, try a few sensible
+        # candidates: cwd/{repo}, parent-of-state-dir/{repo}.
+        candidates = []
+        if source_root:
+            candidates.append(Path(source_root))
+        candidates.append(Path.cwd() / repo)
+        candidates.append(Path.cwd().parent / repo)
+        state_dir_env = os.environ.get("DEVAI_STATE_DIR", "")
+        if state_dir_env:
+            candidates.append(Path(state_dir_env).parent.parent / repo)
+        roots = [c for c in candidates if c.exists()]
+        if not roots:
+            return {"error": f"could not locate '{repo}' on disk; pass source_root explicitly",
+                    "tried": [str(c) for c in candidates]}
+        root = roots[0]
+
+        for rel_path in java_files:
+            full = root / rel_path
+            if not full.exists():
+                skipped_missing += 1
+                continue
+            try:
+                content = full.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                skipped_missing += 1
+                continue
+            scanned += 1
+            routes = extract_quarkus_routes(content, rel_path)
+            for r in routes:
+                d = {
+                    "framework": r.framework, "http_method": r.http_method,
+                    "path": r.path, "handler_class": r.handler_class,
+                    "handler_method": r.handler_method, "handler_symbol": r.handler_symbol,
+                    "file": r.file, "line": r.line,
+                    "repo": repo, "branch": branch,
+                }
+                all_routes.append(d)
+                total_routes += 1
+
+        inserted = self._graph_store.add_routes(all_routes)
+        return {
+            "repo": repo, "branch": branch,
+            "source_root": str(root),
+            "java_files_indexed": len(java_files),
+            "java_files_scanned": scanned,
+            "java_files_missing_on_disk": skipped_missing,
+            "routes_extracted": total_routes,
+            "routes_persisted": inserted,
+        }
+
+    def _handle_search_routes(self, params: dict) -> dict:
+        """List routes matching a path substring + optional filters."""
+        rows = self._graph_store.search_routes(
+            q=params.get("q", ""),
+            framework=params.get("framework", ""),
+            http_method=params.get("http_method", ""),
+            repo=params.get("repo", ""),
+            branch=params.get("branch", ""),
+            limit=int(params.get("limit", 50)),
+        )
+        return {"count": len(rows), "routes": rows}
+
+    def _handle_routes_for_handler(self, params: dict) -> dict:
+        """Given a handler symbol, return the route(s) it serves."""
+        handler = params.get("handler_symbol", "")
+        if not handler:
+            return {"error": "handler_symbol is required"}
+        return {"handler_symbol": handler, "routes": self._graph_store.routes_for_handler(handler)}
 
     def _handle_fts_rebuild(self, params: dict) -> dict:
         """Rebuild graph_symbols_fts from current graph_edges.
