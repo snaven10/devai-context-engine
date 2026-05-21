@@ -322,6 +322,16 @@ func (c *StdioClient) ExtractQuarkusRoutes(repo, branch, sourceRoot string) (int
 	return c.Call("extract_quarkus_routes", p)
 }
 
+// ExtractRoutes is the generic dispatcher. framework ∈
+// quarkus|spring|fastapi|flask|express|nestjs|angular.
+func (c *StdioClient) ExtractRoutes(framework, repo, branch, sourceRoot string) (interface{}, error) {
+	p := map[string]interface{}{"framework": framework, "repo": repo, "branch": branch}
+	if sourceRoot != "" {
+		p["source_root"] = sourceRoot
+	}
+	return c.Call("extract_routes", p)
+}
+
 // SearchRoutes finds routes matching a path substring + optional filters.
 func (c *StdioClient) SearchRoutes(q, framework, httpMethod, repo, branch string, limit int) (interface{}, error) {
 	p := map[string]interface{}{"limit": limit}

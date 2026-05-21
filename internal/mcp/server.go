@@ -269,6 +269,18 @@ func (s *Server) registerTools(srv *mcpserver.MCPServer) {
 		),
 		s.handleRoutesForHandler,
 	)
+
+	// 21. extract_routes — generic framework dispatcher
+	srv.AddTool(
+		mcplib.NewTool("extract_routes",
+			mcplib.WithDescription("Scan a repo+branch and persist routes for the given framework. Supported: quarkus, spring, fastapi, flask, express, nestjs, angular. Routes become queryable via search_routes / routes_for_handler."),
+			mcplib.WithString("framework", mcplib.Required(), mcplib.Description("quarkus | spring | fastapi | flask | express | nestjs | angular")),
+			mcplib.WithString("repo", mcplib.Required(), mcplib.Description("Repository name (matches graph_edges.repo)")),
+			mcplib.WithString("branch", mcplib.Required(), mcplib.Description("Branch (matches graph_edges.branch)")),
+			mcplib.WithString("source_root", mcplib.Description("Absolute on-disk path of the repo (optional; auto-detected if omitted)")),
+		),
+		s.handleExtractRoutes,
+	)
 }
 
 // --- Argument helpers ---
@@ -923,6 +935,29 @@ func (s *Server) handleRoutesForHandler(ctx context.Context, request mcplib.Call
 	result, err := s.mlClient.Call("routes_for_handler", map[string]interface{}{"handler_symbol": handler})
 	if err != nil {
 		return mcplib.NewToolResultError(fmt.Sprintf("routes_for_handler failed: %v", err)), nil
+	}
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return mcplib.NewToolResultText(string(resultJSON)), nil
+}
+
+func (s *Server) handleExtractRoutes(ctx context.Context, request mcplib.CallToolRequest) (*mcplib.CallToolResult, error) {
+	a := args(request)
+	framework := argString(a, "framework", "")
+	repo := argString(a, "repo", s.activeRepo)
+	branch := argString(a, "branch", s.activeBranch)
+	sourceRoot := argString(a, "source_root", "")
+	if framework == "" || repo == "" || branch == "" {
+		return mcplib.NewToolResultError("framework, repo, branch are required"), nil
+	}
+	params := map[string]interface{}{
+		"framework": framework, "repo": repo, "branch": branch,
+	}
+	if sourceRoot != "" {
+		params["source_root"] = sourceRoot
+	}
+	result, err := s.mlClient.Call("extract_routes", params)
+	if err != nil {
+		return mcplib.NewToolResultError(fmt.Sprintf("extract_routes failed: %v", err)), nil
 	}
 	resultJSON, _ := json.MarshalIndent(result, "", "  ")
 	return mcplib.NewToolResultText(string(resultJSON)), nil

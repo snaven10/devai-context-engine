@@ -28,6 +28,9 @@ _METHOD_DECL = re.compile(
 )
 
 
+EXTENSIONS = (".java",)
+
+
 @dataclass
 class Route:
     framework: str = "quarkus"
@@ -38,6 +41,11 @@ class Route:
     handler_symbol: str = ""
     file: str = ""
     line: int = 0
+
+
+def extract(source: str, file_path: str) -> list["Route"]:
+    """Dispatcher entry point used by routes_dispatcher."""
+    return extract_quarkus_routes(source, file_path)
 
 
 def _join_paths(base: str, sub: str) -> str:
