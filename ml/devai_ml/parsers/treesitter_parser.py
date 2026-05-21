@@ -457,6 +457,192 @@ class TreeSitterLanguageParser:
             return chunk.decode("utf-8", errors="replace")
         return chunk
 
+    # ---- Target FQN resolution ------------------------------------------------
+    #
+    # The .scm queries capture `@call.name` as a bare identifier (`getLogger`).
+    # That hides the difference between `org.slf4j.Logger.getLogger` and any
+    # other `getLogger` in the codebase. Here we look at the receiver (the
+    # object the method is invoked on) and the file's import declarations to
+    # rebuild the fully-qualified target name when possible.
+    # --------------------------------------------------------------------------
+
+    def _build_import_map(self, tree: Any, source: bytes | str) -> dict[str, str]:
+        """Return `{local_name: FQN}` for everything imported by this file."""
+        if self._language == "java":
+            return self._build_java_import_map(tree, source)
+        if self._language in ("typescript", "javascript"):
+            return self._build_ts_import_map(tree, source)
+        if self._language == "python":
+            return self._build_python_import_map(tree, source)
+        return {}
+
+    def _build_java_import_map(self, tree: Any, source: bytes | str) -> dict[str, str]:
+        """Java: `import a.b.C;` → {'C': 'a.b.C'}. Wildcards skipped (no
+        local name to anchor on). Static imports keep their member name."""
+        imports: dict[str, str] = {}
+
+        def walk(node):
+            if node.type == "import_declaration":
+                fqn = None
+                is_wildcard = False
+                for c in node.children:
+                    if c.type == "scoped_identifier":
+                        fqn = self._node_text(c, source)
+                    elif c.type == "asterisk":
+                        is_wildcard = True
+                if fqn and not is_wildcard:
+                    local = fqn.rsplit(".", 1)[-1] if "." in fqn else fqn
+                    imports[local] = fqn
+            for c in node.children:
+                walk(c)
+
+        walk(tree.root_node)
+        return imports
+
+    def _build_ts_import_map(self, tree: Any, source: bytes | str) -> dict[str, str]:
+        """TS/JS: rebuild a local_name → module.Name map from the import
+        statements. Module is the literal source string (path or package)."""
+        imports: dict[str, str] = {}
+
+        def text(n):
+            return self._node_text(n, source)
+
+        def harvest_clause(clause, module: str):
+            for c in clause.children:
+                if c.type == "identifier":
+                    # `import Default from '...'`
+                    imports[text(c)] = f"{module}.default"
+                elif c.type == "namespace_import":
+                    # `import * as ns from '...'`
+                    for d in c.children:
+                        if d.type == "identifier":
+                            imports[text(d)] = module
+                elif c.type == "named_imports":
+                    # `import { A, B as C } from '...'`
+                    for d in c.children:
+                        if d.type == "import_specifier":
+                            spec_name = None
+                            spec_alias = None
+                            try:
+                                n = d.child_by_field_name("name")
+                                a = d.child_by_field_name("alias")
+                                spec_name = text(n) if n is not None else None
+                                spec_alias = text(a) if a is not None else None
+                            except Exception:
+                                pass
+                            if spec_name is None:
+                                # fall back: first identifier child
+                                ids = [x for x in d.children if x.type == "identifier"]
+                                if ids:
+                                    spec_name = text(ids[0])
+                            if spec_name:
+                                local = spec_alias or spec_name
+                                imports[local] = f"{module}.{spec_name}"
+
+        def walk(node):
+            if node.type == "import_statement":
+                module = None
+                for c in node.children:
+                    if c.type == "string":
+                        t = text(c).strip()
+                        if len(t) >= 2 and t[0] in "\"'`" and t[-1] in "\"'`":
+                            module = t[1:-1]
+                        else:
+                            module = t
+                        break
+                if module is None:
+                    return
+                for c in node.children:
+                    if c.type == "import_clause":
+                        harvest_clause(c, module)
+            for c in node.children:
+                walk(c)
+
+        walk(tree.root_node)
+        return imports
+
+    def _build_python_import_map(self, tree: Any, source: bytes | str) -> dict[str, str]:
+        """Python: `from a.b import C [as D]` and `import a.b [as ab]`."""
+        imports: dict[str, str] = {}
+
+        def text(n):
+            return self._node_text(n, source)
+
+        def harvest_aliased(node, module_prefix: str):
+            # aliased_import: name (dotted_name) + alias (identifier)
+            name_n = node.child_by_field_name("name") if hasattr(node, "child_by_field_name") else None
+            alias_n = node.child_by_field_name("alias") if hasattr(node, "child_by_field_name") else None
+            if name_n is None:
+                return
+            name_text = text(name_n)
+            alias_text = text(alias_n) if alias_n is not None else name_text.rsplit(".", 1)[-1]
+            full = (module_prefix + "." + name_text) if module_prefix else name_text
+            imports[alias_text] = full
+
+        def walk(node):
+            if node.type == "import_statement":
+                for c in node.children:
+                    if c.type == "dotted_name":
+                        full = text(c)
+                        local = full.split(".", 1)[0]  # `import foo.bar` binds `foo`
+                        imports[local] = full
+                    elif c.type == "aliased_import":
+                        harvest_aliased(c, "")
+            elif node.type == "import_from_statement":
+                # First dotted_name child is the module; subsequent ones are names
+                module = ""
+                saw_import_kw = False
+                for c in node.children:
+                    if c.type in ("dotted_name", "relative_import") and not saw_import_kw:
+                        module = text(c)
+                    elif c.type == "import":
+                        saw_import_kw = True
+                    elif saw_import_kw and c.type == "dotted_name":
+                        name_text = text(c)
+                        local = name_text.rsplit(".", 1)[-1]
+                        imports[local] = f"{module}.{name_text}" if module else name_text
+                    elif saw_import_kw and c.type == "aliased_import":
+                        harvest_aliased(c, module)
+            for c in node.children:
+                walk(c)
+
+        walk(tree.root_node)
+        return imports
+
+    def _resolve_target_name(self, name_node: Any, source: bytes | str,
+                              import_map: dict[str, str]) -> str:
+        """Take an `@call.name` node and return either the bare name or its
+        fully-qualified form when the receiver maps to an import."""
+        call_name = self._node_text(name_node, source)
+        if not call_name:
+            return call_name
+        parent = name_node.parent if hasattr(name_node, "parent") else None
+
+        # Receiver-aware resolution: `Logger.getLogger` where `Logger` is imported.
+        if parent is not None:
+            container_type = parent.type
+            obj_field = "object"
+            # Java: name node lives directly under method_invocation
+            # TS/JS: name node lives under member_expression which is under call_expression
+            # Python: name node lives under `attribute`
+            if container_type in ("method_invocation", "member_expression", "attribute"):
+                try:
+                    obj_node = parent.child_by_field_name(obj_field)
+                except Exception:
+                    obj_node = None
+                if obj_node is not None and obj_node.type in ("identifier", "type_identifier"):
+                    receiver = self._node_text(obj_node, source)
+                    if receiver in import_map:
+                        return f"{import_map[receiver]}.{call_name}"
+
+        # Free-standing call where the function name itself is the import (no receiver)
+        # — common with `from X import foo; foo()` (Python) or
+        # `import static X.bar; bar()` (Java).
+        if call_name in import_map:
+            return import_map[call_name]
+
+        return call_name
+
     def _container_source_id(self, node: Any, source: bytes | str, file_path: str) -> str:
         """Produce the source-side id for a call edge.
 
@@ -474,8 +660,12 @@ class TreeSitterLanguageParser:
     ) -> list[GraphEdge]:
         """Extract function calls using .scm query file (tree-sitter 0.25+ API).
 
-        Each call edge's `source` is resolved to the symbol that physically
-        encloses the call (Class.method), not a generic file-level placeholder.
+        - `source` is resolved to the symbol that physically encloses the
+          call (Class.method) via _container_source_id.
+        - `target` is resolved to its fully-qualified form when the receiver
+          or the call name matches an import in this file
+          (e.g. `Logger.getLogger` with `import org.slf4j.Logger;` becomes
+          `org.slf4j.Logger.getLogger`).
         """
         import tree_sitter
 
@@ -484,14 +674,16 @@ class TreeSitterLanguageParser:
         cursor = tree_sitter.QueryCursor(query)
         matches = cursor.matches(tree.root_node)
 
+        # One pass over imports per file — reused for every call below.
+        import_map = self._build_import_map(tree, source)
+
         for _pattern_idx, captures_dict in matches:
             for capture_name, nodes in captures_dict.items():
                 if "name" in capture_name:
                     for node in nodes:
-                        call_name = self._node_text(node, source)
                         edges.append(GraphEdge(
                             source=self._container_source_id(node, source, file_path),
-                            target=call_name,
+                            target=self._resolve_target_name(node, source, import_map),
                             kind="calls",
                             file_path=file_path,
                             line=node.start_point[0] + 1,
