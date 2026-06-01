@@ -12,6 +12,14 @@ All notable changes to DevAI are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Blend-scored chunking for long memories** — works around the embedding context-window limit (mpnet
+  caps inputs at 128 tokens, hiding buried content in long memories from semantic recall). A long memory
+  now keeps its intro/whole vector (`chunk_level="memory"`) **and** gains title-prepended body-window
+  vectors (`chunk_level="memory_chunk"`); short memories stay single-vector. Recall blends the two signals
+  — `alpha*intro_sim + (1-alpha)*max_chunk_sim` (A/B-validated `alpha=0.5`); the blend, not a plain max,
+  suppresses the noise floor chunking introduces, and the reranker still does final precision over full
+  memory text. New `reindex_memories` RPC migrates existing memories. Tunable via `DEVAI_MEMORY_CHUNKING`
+  (on by default), `DEVAI_MEMORY_BLEND_ALPHA`, `DEVAI_MEMORY_CHUNK_MAX_CHUNKS`, `DEVAI_MEMORY_CHUNK_OVERLAP`.
 - Documented the **multilingual reranker** option: set `DEVAI_RERANK_MODEL=ms-marco-MultiBERT-L-12` (a
   flashrank ONNX model) so cross-lingual queries score correctly — measured ~0.37 → ~0.99 on an
   English-query/Spanish-memory case, with no re-index (the reranker runs at query time). Updated
