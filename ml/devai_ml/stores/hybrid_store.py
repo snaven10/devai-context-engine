@@ -229,6 +229,13 @@ class HybridVectorStore:
         self._local.delete_by_file(repo, branch, file_path)
         self._shared_write("delete_by_file", repo, branch, file_path)
 
+    def delete_memory_vectors(self, vector_id: str) -> None:
+        """Delete a memory's intro + chunk vectors from both stores."""
+        local_del = getattr(self._local, "delete_memory_vectors", None)
+        if callable(local_del):
+            local_del(vector_id)
+        self._shared_write("delete_memory_vectors", vector_id)
+
     # ------------------------------------------------------------------
     # VectorStore Protocol — rename_file
     # ------------------------------------------------------------------

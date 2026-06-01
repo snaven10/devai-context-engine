@@ -50,6 +50,7 @@ class VectorStore(Protocol):
         limit: int = 10,
     ) -> list[SearchResult]: ...
     def delete_by_file(self, repo: str, branch: str, file_path: str) -> None: ...
+    def delete_memory_vectors(self, vector_id: str) -> None: ...
     def rename_file(self, repo: str, branch: str, old_path: str, new_path: str) -> None: ...
     def delete_collection(self) -> None: ...
     def count(self) -> int: ...
@@ -145,37 +146,36 @@ class LanceDBVectorStore:
         ])
         return self._db.create_table(self._table_name, schema=schema)
 
+    @staticmethod
+    def _row(p: VectorPoint) -> dict:
+        return {
+            "id": p.id,
+            "text": p.text,
+            "vector": p.vector,
+            "repo": p.metadata.get("repo", ""),
+            "branch": p.metadata.get("branch", ""),
+            "commit": p.metadata.get("commit", ""),
+            "file": p.metadata.get("file", ""),
+            "symbol": p.metadata.get("symbol", ""),
+            "symbol_type": p.metadata.get("symbol_type", ""),
+            "language": p.metadata.get("language", ""),
+            "start_line": p.metadata.get("start_line", 0),
+            "end_line": p.metadata.get("end_line", 0),
+            "chunk_level": p.metadata.get("chunk_level", ""),
+            "content_hash": p.metadata.get("content_hash", ""),
+            "is_deletion": p.metadata.get("is_deletion", False),
+            "memory_type": p.metadata.get("memory_type", ""),
+            "memory_scope": p.metadata.get("memory_scope", ""),
+            "memory_tags": p.metadata.get("memory_tags", ""),
+            "indexed_at": p.metadata.get(
+                "indexed_at", datetime.now(timezone.utc).isoformat(),
+            ),
+        }
+
     def upsert(self, points: list[VectorPoint]) -> None:
         if not points:
             return
-        data = []
-        for p in points:
-            row = {
-                "id": p.id,
-                "text": p.text,
-                "vector": p.vector,
-                "repo": p.metadata.get("repo", ""),
-                "branch": p.metadata.get("branch", ""),
-                "commit": p.metadata.get("commit", ""),
-                "file": p.metadata.get("file", ""),
-                "symbol": p.metadata.get("symbol", ""),
-                "symbol_type": p.metadata.get("symbol_type", ""),
-                "language": p.metadata.get("language", ""),
-                "start_line": p.metadata.get("start_line", 0),
-                "end_line": p.metadata.get("end_line", 0),
-                "chunk_level": p.metadata.get("chunk_level", ""),
-                "content_hash": p.metadata.get("content_hash", ""),
-                "is_deletion": p.metadata.get("is_deletion", False),
-                "memory_type": p.metadata.get("memory_type", ""),
-                "memory_scope": p.metadata.get("memory_scope", ""),
-                "memory_tags": p.metadata.get("memory_tags", ""),
-                "indexed_at": p.metadata.get(
-                    "indexed_at",
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            }
-            data.append(row)
-
+        data = [self._row(p) for p in points]
         # Delete existing rows with same IDs first, then add new ones
         ids = [p.id for p in points]
         try:
@@ -183,6 +183,14 @@ class LanceDBVectorStore:
         except Exception:
             pass  # table might be empty
         self._table.add(data)
+
+    def add_points(self, points: list[VectorPoint]) -> None:
+        """Bulk insert WITHOUT upsert's per-id delete pass. The caller must
+        guarantee the ids are fresh (e.g. after a scoped delete). Used by the
+        memory-chunk migration to avoid an O(n^2) delete-per-row rewrite."""
+        if not points:
+            return
+        self._table.add([self._row(p) for p in points])
 
     def search(
         self,
@@ -233,6 +241,22 @@ class LanceDBVectorStore:
                 text=str(table.column("text")[i].as_py()),
             ))
         return search_results
+
+    def delete_memory_vectors(self, vector_id: str) -> None:
+        """Delete a memory's intro vector and all its chunk vectors.
+
+        Chunk ids are ``{vector_id}_c{n}``; the intro id is ``{vector_id}``.
+        Tries a prefix match (intro + chunks) and falls back to deleting just
+        the intro id if the backend lacks ``starts_with``."""
+        for expr in (
+            f"id = '{vector_id}' OR starts_with(id, '{vector_id}_c')",
+            f"id = '{vector_id}'",
+        ):
+            try:
+                self._table.delete(expr)
+                return
+            except Exception:
+                continue
 
     def delete_by_file(self, repo: str, branch: str, file_path: str) -> None:
         try:

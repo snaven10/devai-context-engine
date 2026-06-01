@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .chunking.memory_chunker import body_chunks, blend_hits
 from .chunking.semantic_chunker import SemanticChunker
 from .config import DevAIConfig
 from .embeddings.factory import create_provider
@@ -24,6 +25,20 @@ from .summarization import create_summarizer
 from .util import TokenBudget
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "").strip() or default)
+    except (TypeError, ValueError):
+        return default
 
 
 def _mem_to_dict(m: Memory) -> dict:
@@ -71,6 +86,16 @@ class MLService:
         )
         self._reranker = create_reranker(cfg.rerank)
         self._rerank_top_k_fetch = cfg.rerank.top_k_fetch
+
+        # Memory chunking — works around the embedding context-window limit for
+        # long memories (see chunking/memory_chunker.py). All env-tunable; the
+        # defaults (on, alpha=0.5) are the A/B-validated configuration.
+        self._mem_chunking = os.environ.get(
+            "DEVAI_MEMORY_CHUNKING", "1"
+        ).strip().lower() not in ("0", "false", "no", "off", "")
+        self._mem_chunk_max = _env_int("DEVAI_MEMORY_CHUNK_MAX_CHUNKS", 40)
+        self._mem_chunk_overlap = _env_int("DEVAI_MEMORY_CHUNK_OVERLAP", 30)
+        self._mem_blend_alpha = _env_float("DEVAI_MEMORY_BLEND_ALPHA", 0.5)
 
         # Storage path resolution (priority order):
         #   1. cfg.state_dir (env var DEVAI_STATE_DIR or CLI --state-dir)
@@ -153,6 +178,7 @@ class MLService:
             "get_references": self._handle_get_references,
             "remember": self._handle_remember,
             "recall": self._handle_recall,
+            "reindex_memories": self._handle_reindex_memories,
             "memory_context": self._handle_memory_context,
             "memory_update": self._handle_memory_update,
             "memory_stats": self._handle_memory_stats,
@@ -490,6 +516,113 @@ class MLService:
 
         return {"symbol": symbol, "count": len(all_refs), "references": all_refs[:200]}
 
+    # --- Memory vector indexing ------------------------------------------------
+
+    def _mem_tokenizer(self) -> tuple[Any, int]:
+        """Tokenizer + max_seq_length of the embedding model, when it exposes
+        one (local sentence-transformers). Returns (None, 0) for API providers
+        — those have large context windows and don't need body chunking."""
+        model = getattr(self._embedding, "_model", None)
+        if model is None:
+            return None, 0
+        tok = getattr(model, "tokenizer", None)
+        max_seq = int(getattr(model, "max_seq_length", 0) or 0)
+        return tok, max_seq
+
+    def _store_memory_vectors(self, memory: Memory) -> tuple[str, int]:
+        """Embed a memory and upsert its vector(s): the intro/whole vector
+        (chunk_level='memory', unchanged from the original single-vector path)
+        plus, for long memories when chunking is enabled, extra body-window
+        vectors (chunk_level='memory_chunk'). Returns (vector_id, n_extra_chunks).
+
+        Idempotent: clears any prior vectors for this memory id first, so a
+        re-index that produces fewer chunks does not leave orphans.
+        """
+        from .stores.vector_store import VectorPoint
+
+        title, content = memory.title, memory.content
+        vector_id = f"mem_{memory.normalized_hash[:24]}"
+        base_meta = {
+            "repo": memory.repo, "branch": memory.branch, "commit": "",
+            "file": "", "symbol": memory.title, "symbol_type": memory.memory_type,
+            "language": "", "start_line": 0, "end_line": 0,
+            "content_hash": memory.normalized_hash[:16], "is_deletion": False,
+            "memory_type": memory.memory_type, "memory_scope": memory.scope,
+            "memory_tags": memory.tags,
+        }
+
+        # Intro/whole vector — identical to the original single-vector behaviour.
+        points = [VectorPoint(
+            id=vector_id,
+            vector=self._embedding.embed_single(f"{title} {content}"),
+            metadata={**base_meta, "chunk_level": "memory"},
+            text=f"{title}\n{content}" if title else content,
+        )]
+
+        # Extra body chunks for long memories (token-based, title prepended).
+        n_extra = 0
+        if self._mem_chunking:
+            tok, max_seq = self._mem_tokenizer()
+            extra = body_chunks(
+                title, content, tok, max_seq,
+                overlap=self._mem_chunk_overlap, max_chunks=self._mem_chunk_max,
+            )
+            if extra:
+                vecs = self._embedding.embed(extra)
+                for i, (ctext, cvec) in enumerate(zip(extra, vecs), start=1):
+                    points.append(VectorPoint(
+                        id=f"{vector_id}_c{i}",
+                        vector=cvec,
+                        metadata={**base_meta, "chunk_level": "memory_chunk"},
+                        text=ctext,
+                    ))
+                n_extra = len(extra)
+
+        # Clear stale vectors for this memory (handles shrinking chunk counts),
+        # then upsert the fresh set. Guarded: not every backend implements it —
+        # upsert's own delete-by-id still refreshes the points being re-added.
+        deleter = getattr(self._vector_store, "delete_memory_vectors", None)
+        if callable(deleter):
+            deleter(vector_id)
+        self._vector_store.upsert(points)
+        return vector_id, n_extra
+
+    def _blend_memory_results(self, raw: list, pool: int) -> list:
+        """Collapse mixed intro/chunk hits to one SearchResult per memory using
+        the intro/chunk blend, then take the top `pool` for the reranker.
+
+        Each returned SearchResult carries the memory's FULL text so the
+        cross-encoder reranker scores against complete content (not a chunk).
+        When the intro vector missed the search pool (a buried-only match) the
+        full text is pulled from SQLite by vector_id.
+        """
+        from .stores.vector_store import SearchResult
+
+        out: list[SearchResult] = []
+        for pid, score, intro in blend_hits(raw, alpha=self._mem_blend_alpha)[:pool]:
+            if intro is not None:
+                text, meta = intro.text, intro.metadata
+            else:
+                # NOTE: SQLite columns are scope/tags; the memory_scope /
+                # memory_tags names are LanceDB metadata keys, not table columns.
+                row = self._memory_store._conn.execute(
+                    "SELECT title, content, memory_type, scope, tags "
+                    "FROM memories WHERE vector_id = ? AND deleted_at IS NULL",
+                    (pid,),
+                ).fetchone()
+                if row is None:
+                    continue
+                title = row["title"] or ""
+                text = f"{title}\n{row['content']}" if title else (row["content"] or "")
+                meta = {
+                    "chunk_level": "memory",
+                    "memory_type": row["memory_type"],
+                    "memory_scope": row["scope"],
+                    "memory_tags": row["tags"],
+                }
+            out.append(SearchResult(id=pid, score=score, metadata=meta, text=text))
+        return out
+
     def _handle_remember(self, params: dict) -> dict:
         """Save a structured memory entry.
 
@@ -531,34 +664,9 @@ class MLService:
             files=params.get("files", ""),
         )
 
-        # Embed content for semantic search
-        vector = self._embedding.embed_single(f"{title} {content}")
-        from .stores.vector_store import VectorPoint
-        vector_id = f"mem_{memory.normalized_hash[:24]}"
-
-        point = VectorPoint(
-            id=vector_id,
-            vector=vector,
-            metadata={
-                "repo": memory.repo,
-                "branch": memory.branch,
-                "commit": "",
-                "file": "",
-                "symbol": memory.title,
-                "symbol_type": memory.memory_type,
-                "language": "",
-                "start_line": 0,
-                "end_line": 0,
-                "chunk_level": "memory",
-                "content_hash": memory.normalized_hash[:16],
-                "is_deletion": False,
-                "memory_type": memory.memory_type,
-                "memory_scope": memory.scope,
-                "memory_tags": memory.tags,
-            },
-            text=f"{title}\n{content}" if title else content,
-        )
-        self._vector_store.upsert([point])
+        # Embed content for semantic search (intro vector + body chunks for
+        # long memories — see _store_memory_vectors / chunking/memory_chunker.py).
+        vector_id, _ = self._store_memory_vectors(memory)
 
         # Save to SQLite with rich metadata
         memory.vector_id = vector_id
@@ -576,6 +684,46 @@ class MLService:
             "is_update": saved.revision_count > 1 or saved.duplicate_count > 1,
         }
 
+    def _handle_reindex_memories(self, params: dict) -> dict:
+        """Re-embed every non-deleted memory, (re)generating intro + chunk
+        vectors. Run once after enabling memory chunking (or changing the model).
+        Idempotent — safe to re-run. Returns counts."""
+        rows = self._memory_store._conn.execute(
+            "SELECT * FROM memories WHERE deleted_at IS NULL ORDER BY id"
+        ).fetchall()
+        reindexed = 0
+        with_chunks = 0
+        total_chunks = 0
+        for row in rows:
+            mem = self._memory_store._row_to_memory(row)
+            if not mem.content:
+                continue
+            try:
+                vid, n_extra = self._store_memory_vectors(mem)
+            except Exception as e:
+                logger.warning("reindex failed for memory #%s: %s", mem.id, e)
+                continue
+            if vid != mem.vector_id:
+                self._memory_store._conn.execute(
+                    "UPDATE memories SET vector_id = ? WHERE id = ?", (vid, mem.id),
+                )
+            reindexed += 1
+            if n_extra:
+                with_chunks += 1
+                total_chunks += n_extra
+        self._memory_store._conn.commit()
+        logger.info(
+            "reindex_memories: %d memories, %d chunked (+%d chunk vectors)",
+            reindexed, with_chunks, total_chunks,
+        )
+        return {
+            "reindexed": reindexed,
+            "memories_with_chunks": with_chunks,
+            "extra_chunk_vectors": total_chunks,
+            "chunking_enabled": self._mem_chunking,
+            "blend_alpha": self._mem_blend_alpha,
+        }
+
     def _handle_recall(self, params: dict) -> dict:
         """Search memories using hybrid: semantic vector search + SQLite metadata.
 
@@ -589,20 +737,34 @@ class MLService:
 
         # Semantic search via vector store
         vector = self._embedding.embed_single(query)
-        filters = {"chunk_level": "memory"}
+        filters: dict[str, Any] = {}
         if scope:
             filters["memory_scope"] = scope
         if mem_type:
             filters["memory_type"] = mem_type
 
-        # Same fetch-wider-then-rerank pattern as _handle_search.
-        fetch_limit = (
+        # How many memories to hand the reranker (fetch-wider-then-rerank).
+        rerank_pool = (
             max(self._rerank_top_k_fetch, limit)
             if self._reranker.is_active() else limit
         )
-        vector_results = self._vector_store.search(
-            vector=vector, filter_conditions=filters, limit=fetch_limit,
-        )
+
+        if self._mem_chunking:
+            # Search BOTH the intro vectors and the body-chunk vectors, then
+            # collapse to one score per memory via the intro/chunk blend (see
+            # chunking/memory_chunker.py). Over-fetch: chunks consume pool slots,
+            # so widen to keep enough *distinct* memories in play.
+            filters["chunk_level"] = ["memory", "memory_chunk"]
+            raw = self._vector_store.search(
+                vector=vector, filter_conditions=filters,
+                limit=max(rerank_pool * 3, 90),
+            )
+            vector_results = self._blend_memory_results(raw, rerank_pool)
+        else:
+            filters["chunk_level"] = "memory"
+            vector_results = self._vector_store.search(
+                vector=vector, filter_conditions=filters, limit=rerank_pool,
+            )
         vector_results = self._reranker.rerank(query, vector_results, top_k=limit)
 
         # Enrich with SQLite metadata
@@ -1038,8 +1200,11 @@ class MLService:
                 logger.warning("vector search failed for memory #%d: %s", r["id"], e)
                 continue
 
-            # Keep only code chunks (filter out memory-vs-memory hits) and cap
-            code_hits = [h for h in hits if h.metadata.get("chunk_level") != "memory"][:top_k]
+            # Keep only code chunks (filter out memory + memory_chunk hits) and cap
+            code_hits = [
+                h for h in hits
+                if not h.metadata.get("chunk_level", "").startswith("memory")
+            ][:top_k]
 
             seen = set()
             for h in code_hits:
