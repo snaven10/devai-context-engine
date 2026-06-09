@@ -153,7 +153,7 @@ func runUpgrade(cmd *cobra.Command, args []string) error {
 		return upgradeBuildFromSource(release.TagName)
 	}
 
-	return upgradeFromBinary(downloadURL, release.TagName)
+	return upgradeFromBinary(downloadURL, release.TagName, release)
 }
 
 // upgradeBuildFromSource clones/fetches the repo and builds locally.
@@ -225,8 +225,10 @@ func upgradeBuildFromSource(tag string) error {
 	return nil
 }
 
-// upgradeFromBinary downloads and installs a prebuilt binary.
-func upgradeFromBinary(url, tag string) error {
+// upgradeFromBinary downloads and installs a prebuilt binary, then reinstalls
+// the matching devai_ml Python wheel from the same release so the Go CLI and the
+// Python ML service never drift apart on an upgrade.
+func upgradeFromBinary(url, tag string, release *releaseInfo) error {
 	fmt.Printf("Downloading %s...\n", url)
 
 	client := &http.Client{
@@ -279,6 +281,72 @@ func upgradeFromBinary(url, tag string) error {
 	}
 	os.Chmod(binPath, 0o755)
 
+	// Keep the Python ML package in lockstep with the binary. Without this the
+	// CLI updates but devai_ml stays on the old code, which silently drifts
+	// (bug fixes / config in the ML service never land on `devai upgrade`).
+	if err := reinstallMLWheel(release); err != nil {
+		fmt.Printf("Warning: binary upgraded but the Python ML package was not updated: %v\n", err)
+		fmt.Println("  Run the installer again to refresh it: curl -fsSL <install.sh> | bash")
+	}
+
 	fmt.Printf("Upgraded to %s\n", tag)
+	return nil
+}
+
+// reinstallMLWheel downloads the devai_ml-*.whl asset from the release and
+// force-reinstalls it into the devai venv. Deps (torch/onnx/...) are left as-is
+// (--no-deps): they are pinned at install time and a code-only wheel bump does
+// not need to re-resolve them. Non-fatal to the binary upgrade by design.
+func reinstallMLWheel(release *releaseInfo) error {
+	if release == nil {
+		return fmt.Errorf("no release info")
+	}
+
+	var wheelURL string
+	for _, asset := range release.Assets {
+		if strings.HasPrefix(asset.Name, "devai_ml-") && strings.HasSuffix(asset.Name, ".whl") {
+			wheelURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+	if wheelURL == "" {
+		return fmt.Errorf("no devai_ml wheel in release assets")
+	}
+
+	homeDir, _ := os.UserHomeDir()
+	venvPip := filepath.Join(homeDir, ".local", "share", "devai", "python", "venv", "bin", "pip")
+	if _, err := os.Stat(venvPip); err != nil {
+		return fmt.Errorf("devai venv pip not found at %s (run the installer)", venvPip)
+	}
+
+	fmt.Println("Updating Python ML package...")
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(wheelURL)
+	if err != nil {
+		return fmt.Errorf("downloading wheel: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("wheel download failed (HTTP %d)", resp.StatusCode)
+	}
+
+	tmpWheel, err := os.CreateTemp("", "devai_ml-*.whl")
+	if err != nil {
+		return fmt.Errorf("creating temp wheel: %w", err)
+	}
+	tmpWheelPath := tmpWheel.Name()
+	defer os.Remove(tmpWheelPath)
+	if _, err := io.Copy(tmpWheel, resp.Body); err != nil {
+		tmpWheel.Close()
+		return fmt.Errorf("saving wheel: %w", err)
+	}
+	tmpWheel.Close()
+
+	pipCmd := exec.Command(venvPip, "install", "--force-reinstall", "--no-deps", tmpWheelPath)
+	pipCmd.Stdout = os.Stdout
+	pipCmd.Stderr = os.Stderr
+	if err := pipCmd.Run(); err != nil {
+		return fmt.Errorf("pip install failed: %w", err)
+	}
 	return nil
 }

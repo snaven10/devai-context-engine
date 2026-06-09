@@ -111,6 +111,30 @@ chunk). **256 no aporta** — más almacenamiento, mismo recall. Con `ml-granite
 tamaño se trunca jamás. *(Caveat: medido con 12 queries — la señal "todos iguales" es robusta,
 pero diferencias finas pedirían un harness de 50+ queries.)*
 
+#### Tope de RAM: `DEVAI_EMBED_MAX_CHARS` (protección contra OOM en CPU)
+
+La ventana de 32768 tokens del modelo **no** es un límite de RAM. Los encoders exportados a ONNX
+no acotan la secuencia de entrada, y el **raw parser** (archivos no-AST: `json`/`sql`/`md`
+minificados, lockfiles, bundles) puede emitir **un solo chunk de cientos de miles de tokens**
+— se observó hasta ~2.8M chars. En CPU la atención O(N²) sobre ese blob infla el arena de ONNX
+a **~20 GB** y el OOM killer del SO mata el indexador a mitad del repo.
+
+Por eso `embed()` recorta cada texto a **`DEVAI_EMBED_MAX_CHARS` (default 4096 ≈ 1024 tokens)**
+antes de embeber. 4096 = `large_function_threshold`, así que **ningún chunk de código se trunca**
+(el chunker por AST los mantiene ≤1024 tokens) — solo se recortan los blobs raw gigantes. El
+texto **guardado** queda intacto; solo el *vector* se calcula sobre el prefijo, y el reranker lee
+el texto completo igual, así que el recall del código no se ve afectado.
+
+| Env | Default | Efecto |
+|-----|---------|--------|
+| `DEVAI_EMBED_MAX_CHARS` | `4096` | Chars por texto que llegan al encoder. `0` lo desactiva. Subilo si tenés RAM/GPU de sobra; bajalo (ej. `2048` → pico ~1–3 GB) si vas justo de memoria. |
+| `DEVAI_EMBED_BATCH_SIZE` | `16` | Batch del encoder. Un chunk grande paddea todo el batch, así que batches más chicos también bajan el pico. |
+
+> Medido (CPU, 8 cores, granite int8): con `MAX_CHARS=2048` el pico de RAM por repo baja de
+> **~20.9 GB (OOM) → ~1–3 GB**; 4096 se queda cómodo bajo un cap de cgroup de 20 GB. En máquinas
+> ajustadas, combinalo con un `systemd-run --user --scope -p MemoryMax=…` para que un descontrol
+> nunca tumbe la máquina entera (incluido WSL).
+
 ---
 
 ## 2. El pipeline de respuesta: rerank → presupuesto de tokens

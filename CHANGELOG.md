@@ -11,12 +11,23 @@ All notable changes to DevAI are documented here. The format is based on
 
 ## [Unreleased]
 
-<!-- Template:
 ### Added
+- `DEVAI_EMBED_MAX_CHARS` (default `4096`) and `DEVAI_EMBED_BATCH_SIZE` (default `16`): RAM
+  guards for the local embedder. See `docs/09-models-and-tuning.md` §1 "RAM guard".
+
 ### Changed
+- `devai upgrade` now reinstalls the matching `devai_ml` Python wheel from the release in
+  addition to the Go binary, so the CLI and the ML service no longer drift apart on upgrade
+  (previously only the source-build fallback refreshed Python). Warns, non-fatally, if the
+  wheel asset or venv is missing.
+
 ### Fixed
-### Removed
--->
+- **Indexer OOM on CPU**: the ONNX-exported encoders (e.g. `ml-granite` int8) don't cap the
+  input sequence, so a single oversized non-code chunk from the raw parser (minified
+  json/sql/md — up to ~2.8M chars) made the O(N²) attention explode the ONNX arena to ~20 GB
+  and OOM-kill the indexer mid-repo. `embed()` now caps each text to `DEVAI_EMBED_MAX_CHARS`
+  before encoding (no code chunk is truncated; stored text and reranker input are untouched),
+  dropping the per-repo RAM peak from ~20.9 GB to ~1–3 GB.
 
 ---
 

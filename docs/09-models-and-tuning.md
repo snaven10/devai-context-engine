@@ -47,7 +47,8 @@ run locally via `sentence-transformers`. Select with `embeddings.model` in
 ### Benchmark (measured, CPU-only)
 
 Domain corpus of 49 documents / 40 queries (Spanish technical content), measured
-on a CPU-only machine. Indexing throughput uses sustained batches of 32.
+on a CPU-only machine. Indexing throughput uses sustained batches of
+`DEVAI_EMBED_BATCH_SIZE` (default 16; see the RAM-guard note under §1).
 
 | Model | Backend | Dims | Recall@1 | MRR | Index speed (texts/s) | RAM peak | Disk |
 |-------|---------|------|----------|-----|----------------------|----------|------|
@@ -105,6 +106,30 @@ or raise to **1024** (fewer chunks → smaller, faster index; whole method in on
 **256 adds nothing** — more storage, same recall. With `ml-granite` (32768) no size is
 ever truncated. *(Caveat: measured on 12 queries — the "all equal" signal is robust,
 but fine differences would need a 50+ query harness.)*
+
+#### RAM guard: `DEVAI_EMBED_MAX_CHARS` (CPU OOM protection)
+
+The model's 32768-token window is *not* a RAM limit. The ONNX-exported encoders do not
+cap the input sequence themselves, and the **raw parser** (non-AST files: minified
+`json`/`sql`/`md`, lockfiles, bundles) can emit a **single chunk of hundreds of thousands
+of tokens** — observed up to ~2.8M chars. On CPU the O(N²) attention on such a blob
+explodes the ONNX arena to **~20 GB** and the OS OOM-kills the indexer mid-repo.
+
+`embed()` therefore caps each text to **`DEVAI_EMBED_MAX_CHARS` (default 4096 ≈ 1024
+tokens)** before encoding. 4096 = `large_function_threshold`, so **no code chunk is ever
+truncated** (the AST chunker keeps those ≤1024 tokens) — only oversized raw blobs get
+clipped. The **stored** chunk text is untouched; only the *vector* is computed on the
+prefix, and the reranker reads the full text anyway, so recall is unaffected for code.
+
+| Env | Default | Effect |
+|-----|---------|--------|
+| `DEVAI_EMBED_MAX_CHARS` | `4096` | Chars per text fed to the encoder. `0` disables. Raise with RAM/GPU headroom; lower (e.g. `2048` → ~1–3 GB peak) on tight memory. |
+| `DEVAI_EMBED_BATCH_SIZE` | `16` | Encoder batch. A big chunk pads the whole batch, so smaller batches also cut the peak. |
+
+> Measured (CPU, 8 cores, granite int8): with `MAX_CHARS=2048` the per-repo RAM peak drops
+> from **~20.9 GB (OOM) → ~1–3 GB**; 4096 stays comfortably under a 20 GB cgroup cap.
+> On constrained hosts, pair this with a hard `systemd-run --user --scope -p MemoryMax=…`
+> so a runaway never takes the whole box (incl. WSL) down.
 
 > ⚠️ **Changing the model changes the vector dimension** (384 ↔ 768). The vector
 > store is incompatible across dimensions → it **forces a full re-index**. See §6.

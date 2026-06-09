@@ -6,6 +6,34 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Safety cap on chars fed to the encoder per text. This is NOT the model's context
+# limit (granite handles 32k tokens) — it's a RAM guard. The ONNX-exported models do
+# not cap the sequence themselves, and the raw parser can emit a single non-code chunk
+# (minified json/sql/md — observed up to ~2.8M chars ≈ 700k tokens) that makes the
+# O(N^2) attention explode the ONNX arena to ~20GB on CPU and OOM-kill the indexer.
+# Default 4096 chars ≈ 1024 tokens = large_function_threshold, so NO code chunk is ever
+# truncated (the AST chunker keeps those ≤1024 tok); only oversized raw blobs get clipped.
+# The STORED chunk text is untouched — only the vector is computed on the prefix, and the
+# reranker reads the full text anyway. Raise it if you have RAM/GPU headroom, lower it on
+# tight memory, or set 0 to disable. Tune the batch via DEVAI_EMBED_BATCH_SIZE.
+_DEFAULT_EMBED_MAX_CHARS = 4096
+_DEFAULT_EMBED_BATCH_SIZE = 16
+
+
+def _embed_max_chars() -> int:
+    try:
+        return int(os.environ.get("DEVAI_EMBED_MAX_CHARS", _DEFAULT_EMBED_MAX_CHARS))
+    except ValueError:
+        return _DEFAULT_EMBED_MAX_CHARS
+
+
+def _embed_batch_size() -> int:
+    try:
+        return max(1, int(os.environ.get("DEVAI_EMBED_BATCH_SIZE", _DEFAULT_EMBED_BATCH_SIZE)))
+    except ValueError:
+        return _DEFAULT_EMBED_BATCH_SIZE
+
+
 class ModelInfo:
     """Metadata for an embedding model.
 
@@ -230,9 +258,15 @@ class LocalEmbedding:
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        # Cap each text so a single huge chunk can't blow up the ONNX attention
+        # arena (see module-level note). The model only attends ~512 tokens anyway,
+        # so this drops no signal the encoder would have used.
+        max_chars = _embed_max_chars()
+        if max_chars > 0:
+            texts = [t[:max_chars] for t in texts]
         embeddings = self._model.encode(
             texts,
-            batch_size=32,
+            batch_size=_embed_batch_size(),
             show_progress_bar=False,
             normalize_embeddings=True,
         )
