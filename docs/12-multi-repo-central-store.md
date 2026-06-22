@@ -133,7 +133,7 @@ Note: the entire hook command is a **single line** — no backslash continuation
 
 ### 2.5 Point the MCP client at the central store
 
-In `.mcp.json` (project-scoped) or `~/.claude/settings.json` (global), set `DEVAI_STATE_DIR`
+In `.mcp.json` (project-scoped) or `~/.claude.json` (global), set `DEVAI_STATE_DIR`
 to the same central path:
 
 ```json

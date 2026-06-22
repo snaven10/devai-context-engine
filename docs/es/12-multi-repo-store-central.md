@@ -137,7 +137,7 @@ Nota: el comando completo del hook es **una sola línea** — sin continuaciones
 
 ### 2.5 Apuntar el cliente MCP al store central
 
-En `.mcp.json` (scope de proyecto) o `~/.claude/settings.json` (global), establece
+En `.mcp.json` (scope de proyecto) o `~/.claude.json` (global), establece
 `DEVAI_STATE_DIR` con la misma ruta central:
 
 ```json
