@@ -106,7 +106,7 @@ Options:
   --gpu               Install PyTorch with CUDA support (default: CPU-only)
   --model KEY         Embedding model: minilm-l6 (default) or ml-mpnet (multilingual)
   --client NAME       Configure AI client: claude (default), cursor, both, none
-  --scope SCOPE       Claude config location: global (default) or project (.mcp.json)
+  --scope SCOPE       Claude config location: global (~/.claude.json, default) or project (.mcp.json)
   --hooks             Install the git auto-index post-commit hook (default)
   --no-hooks          Skip the git auto-index hook
   --version TAG       Install a specific release version (default: latest)
