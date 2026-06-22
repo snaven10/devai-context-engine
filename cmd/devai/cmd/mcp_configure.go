@@ -27,7 +27,7 @@ func init() {
 	mcpConfigureCmd.Flags().Bool("all", false, "Configure for all detected clients")
 	mcpConfigureCmd.Flags().Bool("show", false, "Show current MCP config without writing")
 	mcpConfigureCmd.Flags().Bool("remove", false, "Remove DevAI from MCP configs")
-	mcpConfigureCmd.Flags().String("scope", "global", "Where to write Claude config: global (settings.json) or project (.mcp.json) (Claude Code only)")
+	mcpConfigureCmd.Flags().String("scope", "global", "Where to write Claude config: global (~/.claude.json) or project (.mcp.json) (Claude Code only)")
 	mcpConfigureCmd.Flags().StringArray("env", nil, "Extra env var for the MCP entry, KEY=VALUE (repeatable)")
 
 	// Register under the existing server command
@@ -214,10 +214,13 @@ func detectProject(cwd string) (*config.ProjectConfig, string, string) {
 	return nil, stateDir, cwd
 }
 
-// claudeConfigPath returns the path to Claude Code's settings.json.
+// claudeConfigPath returns Claude Code's user-scope config (~/.claude.json),
+// where Claude Code reads user-scope MCP servers. (~/.claude/settings.json only
+// holds permissions/hooks/env and does NOT load mcpServers — entries there are
+// silently ignored by Claude Code.)
 func claudeConfigPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude", "settings.json")
+	return filepath.Join(home, ".claude.json")
 }
 
 // cursorConfigPath returns the path to Cursor's mcp.json.
@@ -447,7 +450,7 @@ After significant code changes:
 }
 
 // resolveClaudeTarget returns the file the Claude Code MCP entry should be written to.
-// scope "project" -> <projectRoot>/.mcp.json ; anything else -> the global settings.json.
+// scope "project" -> <projectRoot>/.mcp.json ; anything else -> ~/.claude.json.
 func resolveClaudeTarget(scope, projectRoot string) string {
 	if scope == "project" {
 		return filepath.Join(projectRoot, ".mcp.json")
