@@ -33,6 +33,10 @@ All notable changes to DevAI are documented here. The format is based on
   search-only install.
 
 ### Fixed
+- `devai server configure` (global scope) now writes the MCP entry to `~/.claude.json` instead of
+  `~/.claude/settings.json`, which Claude Code silently ignores for MCP servers. Users who configured
+  with an older version may have a harmless orphaned `devai` entry under `mcpServers` in
+  `~/.claude/settings.json`; it can be removed by hand.
 - `devai index` now aborts with a clear error when the requested model's output dimension
   mismatches the existing store's dimension, instead of silently appending mismatched vectors
   and corrupting the store. (#footgun-C)

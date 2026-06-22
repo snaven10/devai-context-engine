@@ -89,7 +89,7 @@ devai server configure --all      # Claude Code + Cursor (default)
 devai server configure --claude   # solo Claude Code
 devai server configure --show     # previsualizar sin escribir
 devai server configure --remove   # quitar el entry de devai
-devai server configure --claude --scope project   # escribe un .mcp.json de proyecto en vez de settings.json global
+devai server configure --claude --scope project   # escribe un .mcp.json de proyecto en vez del ~/.claude.json global
 devai server configure --claude --env DEVAI_EMBEDDING_MODEL=ml-mpnet  # fija vars de tuning en el entry
 ```
 
@@ -99,7 +99,7 @@ devai server configure --claude --env DEVAI_EMBEDDING_MODEL=ml-mpnet  # fija var
 
 | Cliente | Archivo escrito | Clave |
 |---------|-----------------|-------|
-| Claude Code | `~/.claude/settings.json` | `mcpServers.devai` |
+| Claude Code | `~/.claude.json` | `mcpServers.devai` |
 | Cursor / Windsurf | `~/.cursor/mcp.json` | `mcpServers.devai` |
 
 > `--scope project` escribe el entry de Claude en `<projectRoot>/.mcp.json` (merge no destructivo, solo Claude Code).

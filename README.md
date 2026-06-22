@@ -265,7 +265,7 @@ This writes MCP server config to Claude Code and Cursor, sets env vars from your
 
 #### Claude Code
 
-Add to `~/.claude/settings.json`:
+Add to `~/.claude.json` (for project-scoped setup, use `.mcp.json` in the project root instead):
 
 ```json
 {
